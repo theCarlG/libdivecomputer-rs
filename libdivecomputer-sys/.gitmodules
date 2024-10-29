@@ -1,0 +1,3 @@
+[submodule "libdivecomputer"]
+	path = libdivecomputer
+	url = git@github.com:libdivecomputer/libdivecomputer.git

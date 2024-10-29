@@ -1,0 +1,9 @@
+[package]
+name = "libdivecomputer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+btleplug = "0.11.6"
+libdivecomputer-sys = { version = "0.1.0", path = "../libdivecomputer-sys" }
+thiserror = "1.0.65"

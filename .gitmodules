@@ -1,0 +1,4 @@
+[submodule "libdivecomputer-sys/libdivecomputer"]
+	path = libdivecomputer-sys/libdivecomputer
+	url = git@github.com:libdivecomputer/libdivecomputer.git
+	tag = 0.8.0
