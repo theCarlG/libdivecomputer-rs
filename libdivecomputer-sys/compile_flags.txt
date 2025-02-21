@@ -19,4 +19,3 @@
 -Wno-unused-parameter
 -l
 bluez
-
