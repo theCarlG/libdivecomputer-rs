@@ -1,0 +1,15 @@
+[package]
+name = "libdivecomputer"
+description = "Safe bindings for libdivecomputer-sys"
+version = "0.1.1"
+edition = "2024"
+authors = [
+    "Carl Gunnarsson <me@carlg.tech>",
+]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/theCarlG/libdivecomputer-rs"
+readme = "README.md"
+keywords = ["divecomputer"]
+
+[dependencies]
+libdivecomputer-sys = { version = "0.1.0", path = "../libdivecomputer-sys" }

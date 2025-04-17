@@ -1,0 +1,19 @@
+[package]
+name = "libdivecomputer-sys"
+description = "Unsafe bindings for libdivecomputer"
+version = "0.1.0"
+edition = "2024"
+authors = [
+    "Carl Gunnarsson <me@carlg.tech>",
+]
+license = "(MIT OR Apache-2.0) AND LGPL-2.1"
+repository = "https://github.com/theCarlG/libdivecomputer-rs"
+build = "build.rs"
+readme = "README.md"
+keywords = ["divecomputer"]
+categories = ["external-ffi-bindings"]
+
+[dependencies]
+
+[build-dependencies]
+bindgen = "0.71.1"
