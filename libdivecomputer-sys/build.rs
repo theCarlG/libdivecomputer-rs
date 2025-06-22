@@ -4,6 +4,8 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use bindgen::callbacks::{ItemInfo, ParseCallbacks};
+
 fn run_command_or_fail<C, P, S>(dir: C, cmd: P, args: &[S])
 where
     C: AsRef<Path>,
@@ -43,75 +45,66 @@ fn main() -> std::io::Result<()> {
 
     let libdc_path = out_dir.join("libdivecomputer");
 
-    println!("Cloning libdivecomputer");
     run_command_or_fail(
         ".",
         "cp",
-        &["-a", "libdivecomputer/.", &libdc_path.display().to_string()],
+        &[
+            "-av",
+            "libdivecomputer/.",
+            &libdc_path.display().to_string(),
+        ],
     );
 
     let lib_root = out_dir.join("libdc");
 
-    // Tell cargo to look for shared libraries in the specified directory
     println!("cargo:rustc-link-search={}", lib_root.join("lib").display());
-
-    // Tell cargo to tell rustc to link the system libdivecomputer.
+    println!("cargo:rustc-link-search=/usr/lib");
+    println!("cargo:rustc-link-lib=dbus-1");
+    println!("cargo:rustc-link-lib=usb-1.0");
+    println!("cargo:rustc-link-lib=mtp");
+    println!("cargo:rustc-link-lib=bluetooth");
     println!("cargo:rustc-link-lib=divecomputer");
 
     if !std::fs::exists(libdc_path.join("configure"))? {
         run_command_or_fail(&libdc_path, "autoreconf", &["--install"]);
     }
 
-    if !std::process::Command::new("./configure")
-        .arg(format!("--prefix={}", lib_root.display()))
-        .arg("--disable-shared")
-        .current_dir(&libdc_path)
-        .output()
-        .expect("could not execute `configure`")
-        .status
-        .success()
-    {
-        panic!("could not configure libdivecomputer");
+    let prefix = &format!("--prefix={}", lib_root.display());
+    run_command_or_fail(
+        &libdc_path,
+        "./configure",
+        &[prefix.as_str(), "--disable-shared"],
+    );
+
+    run_command_or_fail(&libdc_path, "make", &[""]);
+    run_command_or_fail(&libdc_path, "make", &["install"]);
+
+    #[derive(Debug)]
+    struct CB;
+
+    impl ParseCallbacks for CB {
+        fn item_name(&self, item_info: ItemInfo<'_>) -> Option<String> {
+            // Prevent collision of constants, we can probably skip these, I'll have to investigate
+            // the bindgen docs
+            match item_info.name {
+                "SAMPLE_EVENT_STRING" => Some("SAMPLE_EVENT_STRING_DEFAULT".to_string()),
+                "DC_TRANSPORT_USBSTORAGE" => Some("DC_TRANSPORT_USBSTORAGE_DEFAULT".to_string()),
+                "DC_SAMPLE_TTS" => Some("DC_SAMPLE_TTS_DEFAULT".to_string()),
+                "DC_FIELD_STRING" => Some("DC_FIELD_STRING_DEFAULT".to_string()),
+                _ => None,
+            }
+        }
     }
 
-    // if !std::fs::exists(lib_root.join("lib/libdivecomputer.a"))? {
-    if !std::process::Command::new("make")
-        .current_dir(&libdc_path)
-        .output()
-        .expect("could not exec `make`")
-        .status
-        .success()
-    {
-        panic!("could not compile libdivecomputer");
-    }
-
-    if !std::process::Command::new("make")
-        .arg("install")
-        .current_dir(&libdc_path)
-        .output()
-        .expect("could not exec `make`")
-        .status
-        .success()
-    {
-        panic!("could not install library files");
-    }
-    // }
-
-    // The bindgen::Builder is the main entry point
-    // to bindgen, and lets you build up options for
-    // the resulting bindings.
     let bindings = bindgen::Builder::default()
-        // The input header we would like to generate
-        // bindings for.
         .header("wrapper.h")
+        .wrap_unsafe_ops(true)
+        .prepend_enum_name(false)
         .clang_arg(format!("-I{}/include", lib_root.display()))
         .clang_arg("-v")
-        // Tell cargo to invalidate the built crate whenever any of the
-        // included header files changed.
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Finish the builder and generate the bindings.
+        .parse_callbacks(Box::new(CB))
+        .clang_macro_fallback()
         .generate()
-        // Unwrap the Result and panic on failure.
         .expect("Unable to generate bindings");
 
     // Write the bindings to the $OUT_DIR/bindings.rs file.

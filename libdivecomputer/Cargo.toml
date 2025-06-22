@@ -3,13 +3,23 @@ name = "libdivecomputer"
 description = "Safe bindings for libdivecomputer-sys"
 version = "0.1.1"
 edition = "2024"
-authors = [
-    "Carl Gunnarsson <me@carlg.tech>",
-]
+authors = ["Carl Gunnarsson <me@carlg.tech>"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/theCarlG/libdivecomputer-rs"
 readme = "README.md"
 keywords = ["divecomputer"]
 
 [dependencies]
-libdivecomputer-sys = { version = "0.1.0", path = "../libdivecomputer-sys" }
+btleplug = "0.11.8"
+jiff = { version = "0.2.15", features = ["js"] }
+libdivecomputer-sys = { version = "0.1.0", path = "../libdivecomputer-sys", optional = true }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_repr = "0.1.20"
+thiserror = "2.0.12"
+tokio = { version = "1.45.1", features = ["rt-multi-thread", "macros"] }
+tokio-stream = "0.1.17"
+uuid = { version = "1.17.0", features = ["macro-diagnostics", "v4"] }
+
+[features]
+default = ["bindings"]
+bindings = ["dep:libdivecomputer-sys"]
