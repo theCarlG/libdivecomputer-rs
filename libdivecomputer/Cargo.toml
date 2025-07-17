@@ -1,15 +1,37 @@
 [package]
-name = "libdivecomputer"
+name        = "libdivecomputer"
 description = "Safe bindings for libdivecomputer-sys"
-version = "0.1.1"
-edition = "2024"
-authors = [
-    "Carl Gunnarsson <me@carlg.tech>",
-]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/theCarlG/libdivecomputer-rs"
-readme = "README.md"
-keywords = ["divecomputer"]
+version     = "0.1.1"
+edition     = "2024"
+authors     = ["Carl Gunnarsson <me@carlg.tech>"]
+license     = "MIT OR Apache-2.0"
+repository  = "https://github.com/theCarlG/libdivecomputer-rs"
+readme      = "README.md"
+keywords    = ["divecomputer"]
+
+[lib]
+name       = "libdivecomputer"
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+btleplug            = "0.11.8"
+futures             = "0.3.31"
+jiff                = { version = "0.2.15", features = ["js", "serde"] }
 libdivecomputer-sys = { version = "0.1.0", path = "../libdivecomputer-sys" }
+serde               = { version = "1.0.219", features = ["derive"] }
+serde_repr          = "0.1.20"
+thiserror           = "2.0.12"
+tokio               = { version = "1.45.1", features = ["fs", "macros", "rt-multi-thread"] }
+tokio-stream        = "0.1.17"
+uuid                = { version = "1.17.0", features = ["macro-diagnostics", "v4"] }
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni              = "0.19"
+jni-utils        = "0.1.1"
+ndk-context      = "0.1"
+android-activity = { version = "0.6", features = ["native-activity"] }
+
+[dev-dependencies]
+clap         = { version = "4.5.40", features = ["derive"] }
+serde-xml-rs = "0.8.1"
+serde_json   = "1.0.140"
