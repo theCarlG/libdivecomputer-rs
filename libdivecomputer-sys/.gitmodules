@@ -1,3 +1,4 @@
 [submodule "libdivecomputer"]
 	path = libdivecomputer
-	url = git@github.com:libdivecomputer/libdivecomputer.git
+	url = git@github.com:theCarlg/libdc.git
+    branch = libdivecomputer-rs

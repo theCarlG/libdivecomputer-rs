@@ -1,0 +1,116 @@
+# .cargo/config.toml
+[build]
+target-dir = "target"
+
+# cargo-xbuild configuration
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+rustflags = [
+    "-C",
+    "linker=aarch64-linux-gnu-gcc",
+    "-C",
+    "link-arg=--sysroot=/usr/aarch64-linux-gnu",
+]
+
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
+rustflags = [
+    "-C",
+    "linker=arm-linux-gnueabihf-gcc",
+    "-C",
+    "link-arg=--sysroot=/usr/arm-linux-gnueabihf",
+]
+
+# Android targets for cargo-xbuild
+[target.aarch64-linux-android]
+ar = "aarch64-linux-android-ar"
+linker = "aarch64-linux-android21-clang"
+rustflags = [
+    "-C",
+    "link-arg=-Wl,--gc-sections",
+    "-C",
+    "link-arg=-Wl,--as-needed",
+]
+
+[target.armv7-linux-androideabi]
+ar = "arm-linux-androideabi-ar"
+linker = "armv7a-linux-androideabi16-clang"
+rustflags = [
+    "-C",
+    "link-arg=-Wl,--gc-sections",
+    "-C",
+    "link-arg=-Wl,--as-needed",
+]
+
+[target.i686-linux-android]
+ar = "i686-linux-android-ar"
+linker = "i686-linux-android16-clang"
+
+[target.x86_64-linux-android]
+ar = "x86_64-linux-android-ar"
+linker = "x86_64-linux-android21-clang"
+
+# iOS targets
+[target.aarch64-apple-ios]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-dead_strip",
+    "-C",
+    "link-arg=-Wl,-application_extension",
+    "-C",
+    "link-arg=-mios-version-min=11.0",
+]
+
+[target.x86_64-apple-ios]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-dead_strip",
+    "-C",
+    "link-arg=-Wl,-application_extension",
+    "-C",
+    "link-arg=-mios-simulator-version-min=11.0",
+]
+
+[target.aarch64-apple-ios-sim]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-dead_strip",
+    "-C",
+    "link-arg=-Wl,-application_extension",
+    "-C",
+    "link-arg=-mios-simulator-version-min=14.0",
+]
+
+# macOS targets
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-dead_strip",
+    "-C",
+    "link-arg=-mmacosx-version-min=10.15",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-dead_strip",
+    "-C",
+    "link-arg=-mmacosx-version-min=11.0",
+]
+
+# Windows targets
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+rustflags = ["-C", "link-arg=-Wl,--gc-sections"]
+
+[target.i686-pc-windows-gnu]
+linker = "i686-w64-mingw32-gcc"
+rustflags = ["-C", "link-arg=-Wl,--gc-sections"]
+
+# Environment variables for cargo-xbuild
+[env]
+XBUILD_SYSROOT_PATH = { value = "", relative = true }

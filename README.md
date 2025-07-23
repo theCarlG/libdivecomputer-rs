@@ -24,17 +24,19 @@ This repository contains 2 crates:
 
 * Any other features have to be accessed through the unsafe [libdivecomputer-sys](libdivecomputer-sys/) crate.
 
+* Only supports Linux and Android at the moment.
+
 ## Usage
 
 The following code example shows how [`libdivecomputer`](libdivecomputer/) can be initialized.
 
 ``` rust
-use libdivecomputer::Descriptor;
-
-let descriptor = Descriptor::default();
-
-for dive_computer in descriptor {
-    println!("{dive_computer:?}");
+let dive_computer = DiveComputer::new();
+for vendor in dive_computer.vendors().unwrap() {
+    println!("{}", vendor.name);
+    for product in vendor.products() {
+        println!("\t{}", product.name)
+    }
 }
 ```
 

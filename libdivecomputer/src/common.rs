@@ -1,5 +1,23 @@
+use libdivecomputer_sys as ffi;
+use serde::Serialize;
+use serde_repr::Deserialize_repr;
+
+#[macro_export]
+macro_rules! void_ptr {
+    ($s:expr) => {
+        $s as *mut _ as *mut c_void
+    };
+}
+
+#[macro_export]
+macro_rules! c_void_as {
+    ($s:expr, $t:ty) => {
+        &mut *($s as *mut $t)
+    };
+}
+
 #[repr(i32)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize_repr)]
 pub enum Status {
     Success = 0,
     Done = 1,
@@ -15,8 +33,17 @@ pub enum Status {
     Cancelled = -10,
 }
 
+impl TryFrom<u32> for Status {
+    type Error = String;
+
+    fn try_from(value: u32) -> Result<Status, Self::Error> {
+        Self::try_from(value as i32)
+    }
+}
+
 impl TryFrom<i32> for Status {
     type Error = String;
+
     fn try_from(value: i32) -> Result<Status, Self::Error> {
         let result = match value {
             0 => Self::Success,
@@ -39,250 +66,289 @@ impl TryFrom<i32> for Status {
 }
 
 #[repr(u32)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Transport {
-    None = 0,
-    Serial = 1 << 0,
-    Usb = 1 << 1,
-    UsbHid = 1 << 2,
-    Irda = 1 << 3,
-    Bluetooth = 1 << 4,
-    Ble = 1 << 5,
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize_repr)]
+pub enum SampleKind {
+    Time,
+    Depth,
+    Pressure,
+    Temperature,
+    Event,
+    Rbt,
+    Heartbeat,
+    Bearing,
+    Vendor,
+    Setpoint,
+    Ppo2,
+    Cns,
+    Deco,
+    Gasmix,
+    O2sensor,
+
+    // From Subsurface
+    TTS,
 }
 
-impl From<u32> for Transport {
+impl std::fmt::Display for SampleKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::Time => "Time",
+                Self::Depth => "Depth",
+                Self::Pressure => "Pressure",
+                Self::Temperature => "Temperature",
+                Self::Event => "Event",
+                Self::Rbt => "RBT",
+                Self::Heartbeat => "Heartbeat",
+                Self::Bearing => "Bearing",
+                Self::Vendor => "Vendor",
+                Self::Setpoint => "Setpoint",
+                Self::Ppo2 => "PPO2",
+                Self::Cns => "CNS",
+                Self::Deco => "Deco",
+                Self::Gasmix => "Gasmix",
+                Self::O2sensor => "O2 Sensor",
+                Self::TTS => "TTS",
+            }
+        )
+    }
+}
+
+#[repr(u32)]
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize_repr)]
+pub enum EventKind {
+    #[default]
+    None = ffi::SAMPLE_EVENT_NONE,
+    DecoStop = ffi::SAMPLE_EVENT_DECOSTOP,
+    Rbt = ffi::SAMPLE_EVENT_RBT,
+    Ascent = ffi::SAMPLE_EVENT_ASCENT,
+    Ceiling = ffi::SAMPLE_EVENT_CEILING,
+    Workload = ffi::SAMPLE_EVENT_WORKLOAD,
+    Transmitter = ffi::SAMPLE_EVENT_TRANSMITTER,
+    Violation = ffi::SAMPLE_EVENT_VIOLATION,
+    Bookmark = ffi::SAMPLE_EVENT_BOOKMARK,
+    Surface = ffi::SAMPLE_EVENT_SURFACE,
+    SafetyStop = ffi::SAMPLE_EVENT_SAFETYSTOP,
+    GasChange = ffi::SAMPLE_EVENT_GASCHANGE, // Deprecated: replaced by SampleKind::Gasmix
+    SafetyStopVoluntary = ffi::SAMPLE_EVENT_SAFETYSTOP_VOLUNTARY,
+    SafetyStopMandatory = ffi::SAMPLE_EVENT_SAFETYSTOP_MANDATORY,
+    DeepStop = ffi::SAMPLE_EVENT_DEEPSTOP,
+    CeilingSafetyStop = ffi::SAMPLE_EVENT_CEILING_SAFETYSTOP,
+    Floor = ffi::SAMPLE_EVENT_FLOOR,
+    DiveTime = ffi::SAMPLE_EVENT_DIVETIME,
+    MaxDepth = ffi::SAMPLE_EVENT_MAXDEPTH,
+    Olf = ffi::SAMPLE_EVENT_OLF,
+    Po2 = ffi::SAMPLE_EVENT_PO2,
+    AirTime = ffi::SAMPLE_EVENT_AIRTIME,
+    Rgbm = ffi::SAMPLE_EVENT_RGBM,
+    Heading = ffi::SAMPLE_EVENT_HEADING,
+    TissueLevel = ffi::SAMPLE_EVENT_TISSUELEVEL,
+    GasChange2 = ffi::SAMPLE_EVENT_GASCHANGE2, // Deprecated: replaced by SampleKind::Gasmix
+
+    // From Subsurface
+    String = ffi::SAMPLE_EVENT_STRING,
+}
+
+impl From<u32> for EventKind {
     fn from(value: u32) -> Self {
         match value {
-            0x00000001 => Self::Serial,
-            0x00000010 => Self::Usb,
-            0x00000100 => Self::UsbHid,
-            0x00001000 => Self::Irda,
-            0x00010000 => Self::Bluetooth,
-            0x00100000 => Self::Ble,
+            ffi::SAMPLE_EVENT_DECOSTOP => Self::DecoStop,
+            ffi::SAMPLE_EVENT_RBT => Self::Rbt,
+            ffi::SAMPLE_EVENT_ASCENT => Self::Ascent,
+            ffi::SAMPLE_EVENT_CEILING => Self::Ceiling,
+            ffi::SAMPLE_EVENT_WORKLOAD => Self::Workload,
+            ffi::SAMPLE_EVENT_TRANSMITTER => Self::Transmitter,
+            ffi::SAMPLE_EVENT_VIOLATION => Self::Violation,
+            ffi::SAMPLE_EVENT_BOOKMARK => Self::Bookmark,
+            ffi::SAMPLE_EVENT_SURFACE => Self::Surface,
+            ffi::SAMPLE_EVENT_SAFETYSTOP => Self::SafetyStop,
+            ffi::SAMPLE_EVENT_GASCHANGE => Self::GasChange, // Deprecated: replaced by SampleKind::Gasmix
+            ffi::SAMPLE_EVENT_SAFETYSTOP_VOLUNTARY => Self::SafetyStopVoluntary,
+            ffi::SAMPLE_EVENT_SAFETYSTOP_MANDATORY => Self::SafetyStopMandatory,
+            ffi::SAMPLE_EVENT_DEEPSTOP => Self::DeepStop,
+            ffi::SAMPLE_EVENT_FLOOR => Self::Floor,
+            ffi::SAMPLE_EVENT_DIVETIME => Self::DiveTime,
+            ffi::SAMPLE_EVENT_MAXDEPTH => Self::MaxDepth,
+            ffi::SAMPLE_EVENT_OLF => Self::Olf,
+            ffi::SAMPLE_EVENT_PO2 => Self::Po2,
+            ffi::SAMPLE_EVENT_AIRTIME => Self::AirTime,
+            ffi::SAMPLE_EVENT_RGBM => Self::Rgbm,
+            ffi::SAMPLE_EVENT_HEADING => Self::Heading,
+            ffi::SAMPLE_EVENT_TISSUELEVEL => Self::TissueLevel,
+            ffi::SAMPLE_EVENT_GASCHANGE2 => Self::GasChange2, // Deprecated: replaced by SampleKind::Gasmix
+            ffi::SAMPLE_EVENT_STRING => Self::String,
+
             _ => Self::None,
         }
     }
 }
 
-impl Transport {
-    pub fn vec_from_bitflag(value: u32) -> Vec<Transport> {
-        let mut transports = Vec::new();
-
-        if value & (Transport::Usb as u32) != 0 {
-            transports.push(Self::Usb);
-        }
-        if value & (Self::UsbHid as u32) != 0 {
-            transports.push(Self::UsbHid);
-        }
-        if value & (Self::Ble as u32) != 0 {
-            transports.push(Self::Ble);
-        }
-        if value & (Self::Bluetooth as u32) != 0 {
-            transports.push(Self::Bluetooth);
-        }
-        if value & (Self::Serial as u32) != 0 {
-            transports.push(Self::Serial);
-        }
-        if value & (Self::Irda as u32) != 0 {
-            transports.push(Self::Irda);
-        }
-
-        transports
+impl std::fmt::Display for EventKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::None => "",
+                Self::DecoStop => "Deco Stop",
+                Self::Rbt => "RBT",
+                Self::Ascent => "Ascent",
+                Self::Ceiling => "Ceiling",
+                Self::Workload => "Workload",
+                Self::Transmitter => "Transmitter",
+                Self::Violation => "Violation",
+                Self::Bookmark => "Bookmark",
+                Self::Surface => "Surface",
+                Self::SafetyStop => "Safety Stop",
+                Self::GasChange => "Gas Change",
+                Self::SafetyStopVoluntary => "Safety Stop Voluntary",
+                Self::SafetyStopMandatory => "Safety Stop Mandatory",
+                Self::DeepStop => "Deep Stop",
+                Self::CeilingSafetyStop => "Ceiling Safety Stop",
+                Self::Floor => "Floor",
+                Self::DiveTime => "Dive Time",
+                Self::MaxDepth => "Max Depth",
+                Self::Olf => "OLF",
+                Self::Po2 => "PO2",
+                Self::AirTime => "Air Time",
+                Self::Rgbm => "RGBM",
+                Self::Heading => "Heading",
+                Self::TissueLevel => "Tissue Level",
+                Self::GasChange2 => "Gas change2",
+                Self::String => "String",
+            }
+        )
     }
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize_repr)]
 #[repr(u32)]
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum Family {
+pub enum SampleFlag {
     None = 0,
+    Begin = 1 << 0,
+    End = 1 << 1,
 
-    // Suunto
-    SuuntoSolution = 1 << 16,
-    SuuntoEon,
-    SuuntoVyper,
-    SuuntoVyper2,
-    SuuntoD9,
-    SuuntoEonSteel,
+    // Severity flags with mask
+    SeverityMask = 7 << 2,
+    SeverityState = 1 << 2,
+    SeverityInfo = 2 << 2,
+    SeverityWarn = 3 << 2,
+    SeverityAlarm = 4 << 2,
 
-    // Reefnet
-    ReefnetSensus = 2 << 16,
-    ReefnetSensusPro,
-    ReefnetSensusUltra,
-
-    // Uwatec
-    UwatecAladin = 3 << 16,
-    UwatecMemoMouse,
-    UwatecSmart,
-    UwatecMeridian,
-    UwatecG2,
-
-    // Oceanic
-    OceanicVtPro = 4 << 16,
-    OceanicVeo250,
-    OceanicAtom2,
-
-    // Mares
-    MaresNemo = 5 << 16,
-    MaresPuck,
-    MaresDarwin,
-    MaresIconHD,
-
-    // Heinrichs Weikamp
-    HwOstc = 6 << 16,
-    HwFrog,
-    HwOstc3,
-
-    // Cressi
-    CressiEdy = 7 << 16,
-    CressiLeonardo,
-    CressiGoa,
-
-    // Zeagle
-    ZeagleN2ition3 = 8 << 16,
-
-    // Atomic Aquatics
-    AtomicsCobalt = 9 << 16,
-
-    // Shearwater
-    ShearwaterPredator = 10 << 16,
-    ShearwaterPetrel,
-
-    // Dive Rite
-    DiveRiteNitekQ = 11 << 16,
-
-    // Citizen
-    CitizenAqualand = 12 << 16,
-
-    // DiveSystem
-    DiveSystemIDive = 13 << 16,
-
-    // Cochran
-    CochranCommander = 14 << 16,
-
-    // Tecdiving
-    TecdivingDivecomputerEu = 15 << 16,
-
-    // McLean
-    McLeanExtreme = 16 << 16,
-
-    // Liquivision
-    LiquivisionLynx = 17 << 16,
-
-    // Sporasub
-    SporasubSp2 = 18 << 16,
-
-    // Deep Six
-    DeepSixExcursion = 19 << 16,
-
-    // Seac Screen
-    SeacScreen = 20 << 16,
-
-    // Deepblu Cosmiq
-    DeepbluCosmiq = 21 << 16,
-
-    // Oceans S1
-    OceansS1 = 22 << 16,
-
-    // Divesoft Freedom
-    DivesoftFreedom = 23 << 16,
+    // Type flags with mask
+    TypeMask = 7 << 5,
+    TypeInterest = 1 << 5,
+    TypeNavpoint = 2 << 5,
+    TypeDanger = 3 << 5,
+    TypeAnimal = 4 << 5,
+    TypeIssue = 5 << 5,
+    TypeInjury = 6 << 5,
 }
 
-impl From<u32> for Family {
+// Constants for shifts (these can't be inside the enum)
+pub const SEVERITY_SHIFT: u32 = 2;
+pub const TYPE_SHIFT: u32 = 5;
+
+impl std::fmt::Display for SampleFlag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Self::None => "",
+                Self::Begin => "Begin",
+                Self::End => "End",
+
+                // Severity flags with mask from Subsurface
+                Self::SeverityMask => "SeverityMask",
+                Self::SeverityState => "State",
+                Self::SeverityInfo => "Info",
+                Self::SeverityWarn => "Warn",
+                Self::SeverityAlarm => "Alarm",
+
+                // Type flags with mask from Subsurface
+                Self::TypeMask => "TypeMask",
+                Self::TypeInterest => "Interest",
+                Self::TypeNavpoint => "Navpoint",
+                Self::TypeDanger => "Danger",
+                Self::TypeAnimal => "Animal",
+                Self::TypeIssue => "Issue",
+                Self::TypeInjury => "Injury",
+            }
+        )
+    }
+}
+
+impl From<u32> for SampleFlag {
     fn from(value: u32) -> Self {
-        match value {
-            0 => Family::None,
+        if value == 1 {
+            Self::Begin
+        } else if value == 2 {
+            Self::End
 
-            // Suunto
-            0x00010000 => Family::SuuntoSolution,
-            0x00010001 => Family::SuuntoEon,
-            0x00010002 => Family::SuuntoVyper,
-            0x00010003 => Family::SuuntoVyper2,
-            0x00010004 => Family::SuuntoD9,
-            0x00010005 => Family::SuuntoEonSteel,
+        // Severity flags with mask
+        } else if value == (7 << SEVERITY_SHIFT) {
+            Self::SeverityMask
+        } else if value == (1 << SEVERITY_SHIFT) {
+            Self::SeverityState
+        } else if value == (2 << SEVERITY_SHIFT) {
+            Self::SeverityInfo
+        } else if value == (3 << SEVERITY_SHIFT) {
+            Self::SeverityWarn
+        } else if value == (4 << SEVERITY_SHIFT) {
+            Self::SeverityAlarm
 
-            // Reefnet
-            0x00020000 => Family::ReefnetSensus,
-            0x00020001 => Family::ReefnetSensusPro,
-            0x00020002 => Family::ReefnetSensusUltra,
-
-            // Uwatec
-            0x00030000 => Family::UwatecAladin,
-            0x00030001 => Family::UwatecMemoMouse,
-            0x00030002 => Family::UwatecSmart,
-            0x00030003 => Family::UwatecMeridian,
-            0x00030004 => Family::UwatecG2,
-
-            // Oceanic
-            0x00040000 => Family::OceanicVtPro,
-            0x00040001 => Family::OceanicVeo250,
-            0x00040002 => Family::OceanicAtom2,
-
-            // Mares
-            0x00050000 => Family::MaresNemo,
-            0x00050001 => Family::MaresPuck,
-            0x00050002 => Family::MaresDarwin,
-            0x00050003 => Family::MaresIconHD,
-
-            // Heinrichs Weikamp
-            0x00060000 => Family::HwOstc,
-            0x00060001 => Family::HwFrog,
-            0x00060002 => Family::HwOstc3,
-
-            // Cressi
-            0x00070000 => Family::CressiEdy,
-            0x00070001 => Family::CressiLeonardo,
-            0x00070002 => Family::CressiGoa,
-
-            // Zeagle
-            0x00080000 => Family::ZeagleN2ition3,
-
-            // Atomic Aquatics
-            0x00090000 => Family::AtomicsCobalt,
-
-            // Shearwater
-            0x000A0000 => Family::ShearwaterPredator,
-            0x000A0001 => Family::ShearwaterPetrel,
-
-            // Dive Rite
-            0x000B0000 => Family::DiveRiteNitekQ,
-
-            // Citizen
-            0x000C0000 => Family::CitizenAqualand,
-
-            // DiveSystem
-            0x000D0000 => Family::DiveSystemIDive,
-
-            // Cochran
-            0x000E0000 => Family::CochranCommander,
-
-            // Tecdiving
-            0x000F0000 => Family::TecdivingDivecomputerEu,
-
-            // McLean
-            0x00100000 => Family::McLeanExtreme,
-
-            // Liquivision
-            0x00110000 => Family::LiquivisionLynx,
-
-            // Sporasub
-            0x00120000 => Family::SporasubSp2,
-
-            // Deep Six
-            0x00130000 => Family::DeepSixExcursion,
-
-            // Seac Screen
-            0x00140000 => Family::SeacScreen,
-
-            // Deepblu Cosmiq
-            0x00150000 => Family::DeepbluCosmiq,
-
-            // Oceans S1
-            0x00160000 => Family::OceansS1,
-
-            // Divesoft Freedom
-            0x00170000 => Family::DivesoftFreedom,
-
-            _ => Family::None, // Default for unknown values
+        // Type flags with mask
+        } else if value == (7 << TYPE_SHIFT) {
+            Self::TypeMask
+        } else if value == (1 << TYPE_SHIFT) {
+            Self::TypeInterest
+        } else if value == (2 << TYPE_SHIFT) {
+            Self::TypeNavpoint
+        } else if value == (3 << TYPE_SHIFT) {
+            Self::TypeDanger
+        } else if value == (4 << TYPE_SHIFT) {
+            Self::TypeAnimal
+        } else if value == (5 << TYPE_SHIFT) {
+            Self::TypeIssue
+        } else if value == (6 << TYPE_SHIFT) {
+            Self::TypeInjury
+        } else {
+            Self::None
         }
+    }
+}
+
+// Helper functions for working with the enum and flags
+impl SampleFlag {
+    pub fn as_u32(&self) -> u32 {
+        *self as u32
+    }
+
+    // Get the severity value (shifted right to get the actual value)
+    pub fn get_severity(flags: u32) -> u32 {
+        (flags & (Self::SeverityMask as u32)) >> SEVERITY_SHIFT
+    }
+
+    // Set the severity value (applies the shift)
+    pub fn set_severity(flags: u32, severity: u32) -> u32 {
+        // Clear the severity bits
+        let cleared = flags & !(Self::SeverityMask as u32);
+        // Apply the new severity
+        cleared | ((severity & 0x7) << SEVERITY_SHIFT)
+    }
+
+    // Get the type value (shifted right to get the actual value)
+    pub fn get_type(flags: u32) -> u32 {
+        (flags & (Self::TypeMask as u32)) >> TYPE_SHIFT
+    }
+
+    // Set the type value (applies the shift)
+    pub fn set_type(flags: u32, type_val: u32) -> u32 {
+        // Clear the type bits
+        let cleared = flags & !(Self::TypeMask as u32);
+        // Apply the new type
+        cleared | ((type_val & 0x7) << TYPE_SHIFT)
     }
 }

@@ -17,12 +17,12 @@ Please also see the [repository](https://github.com/theCarlG/libdivecomputer-rs)
 ## Basic usage
 
 ``` rust
-use libdivecomputer::Descriptor;
-
-let descriptor = Descriptor::default();
-
-for dive_computer in descriptor {
-    println!("{dive_computer:?}");
+let dive_computer = DiveComputer::new();
+for vendor in dive_computer.vendors().unwrap() {
+    println!("{}", vendor.name);
+    for product in vendor.products() {
+        println!("\t{}", product.name)
+    }
 }
 ```
 
