@@ -2,7 +2,7 @@ mod common;
 mod context;
 mod descriptor;
 mod device;
-mod error;
+pub mod error;
 pub mod iterator;
 mod parser;
 mod version;
