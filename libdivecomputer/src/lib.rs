@@ -26,9 +26,10 @@ pub use crate::device::{Device, DeviceConnected};
 pub use crate::error::{LibError, Result};
 use crate::iterator::DcIterator;
 use crate::parser::Parser;
+pub use crate::common::EventKind;
 pub use crate::parser::{
     Deco, DecoKind, DecoModel, Dive, DiveEvent, DiveMode, DiveSample, Fingerprint, GasUsage,
-    Gasmix, Ppo2, Sensor, Tank, TankKind, TankUsage,
+    Gasmix, O2Sensor, Ppo2, Sensor, Tank, TankKind, TankUsage,
 };
 
 pub static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();

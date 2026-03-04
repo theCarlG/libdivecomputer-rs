@@ -34,6 +34,10 @@ rustflags = [
     "link-arg=-Wl,--gc-sections",
     "-C",
     "link-arg=-Wl,--as-needed",
+    "-C", 
+    "link-args=-z max-page-size=16384"
+    "-C", 
+    "link-args=-z max-page-size=16384"
 ]
 
 [target.armv7-linux-androideabi]
@@ -44,6 +48,8 @@ rustflags = [
     "link-arg=-Wl,--gc-sections",
     "-C",
     "link-arg=-Wl,--as-needed",
+    "-C", 
+    "link-args=-z max-page-size=16384"
 ]
 
 [target.i686-linux-android]

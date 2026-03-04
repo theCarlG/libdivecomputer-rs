@@ -390,7 +390,7 @@ impl Default for Gasmix {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub enum GasUsage {
     #[default]
     None,

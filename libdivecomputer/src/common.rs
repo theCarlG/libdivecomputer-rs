@@ -1,5 +1,5 @@
 use libdivecomputer_sys as ffi;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_repr::Deserialize_repr;
 
 #[macro_export]
@@ -116,7 +116,7 @@ impl std::fmt::Display for SampleKind {
 }
 
 #[repr(u32)]
-#[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize_repr)]
+#[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 pub enum EventKind {
     #[default]
     None = ffi::SAMPLE_EVENT_NONE,
