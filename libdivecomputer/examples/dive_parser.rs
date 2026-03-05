@@ -1,5 +1,5 @@
 use clap::{Parser as ClapParser, ValueEnum};
-use libdivecomputer::{DiveComputerSync, Family, Product};
+use libdivecomputer::{Context, Descriptor, Dive, Family, LogLevel, Parser};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -34,22 +34,18 @@ struct Args {
     /// Device family type
     #[arg(short = 'f', long)]
     family: Option<Family>,
-
-    /// Model number
-    #[arg(short, long)]
-    model: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DiveOutput {
-    product: Product,
+    device: String,
     dives: Vec<DiveData>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DiveData {
     #[serde(flatten)]
-    dive: libdivecomputer::Dive,
+    dive: Dive,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_info: Option<FileInfo>,
 }
@@ -64,33 +60,24 @@ struct FileInfo {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let dive_computer = DiveComputerSync::new();
+    let ctx = Context::builder().log_level(LogLevel::Warning).build()?;
 
-    let product = if let Some(device_name) = &args.device {
-        dive_computer
-            .vendors()?
-            .iter()
-            .flat_map(|vendor| vendor.products())
-            .find(|item| {
-                let full_name = format!("{} {}", item.vendor, item.name);
-
-                device_name == &full_name || device_name == &item.name
-            })
-            .ok_or("Device not found".to_string())
-    } else if let Some(family) = &args.family {
-        dive_computer
-            .vendors()?
-            .iter()
-            .flat_map(|vendor| vendor.products())
-            .find(|product| product.family == *family)
-            .ok_or("Device family not found".into())
+    let desc = if let Some(ref device_name) = args.device {
+        Descriptor::find_by_name(&ctx, device_name)?
+            .ok_or_else(|| format!("Device '{}' not found", device_name))?
+    } else if let Some(family) = args.family {
+        Descriptor::iter(&ctx)?
+            .find(|d| d.family() == family)
+            .ok_or_else(|| format!("Device family '{family}' not found"))?
     } else {
-        Err("No device name or family specified".into())
-    }?;
+        return Err("Either --device or --family must be specified".into());
+    };
+
+    let device_name = format!("{} {}", desc.vendor(), desc.product());
 
     let mut dive_output = DiveOutput {
         dives: Vec::new(),
-        product: product.clone(),
+        device: device_name.clone(),
     };
 
     for (index, file_path) in args.files.iter().enumerate() {
@@ -99,18 +86,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let data = fs::read(file_path)?;
         let file_size = data.len();
 
-        match dive_computer.parse(&product, data) {
+        let fingerprint = if data.len() > 16 {
+            &data[12..16]
+        } else {
+            &data
+        };
+
+        let parser = Parser::from_descriptor(&ctx, &desc, &data)?;
+        match parser.parse(fingerprint) {
             Ok(dive) => {
-                let dive_data = DiveData {
+                dive_output.dives.push(DiveData {
                     dive,
                     file_info: Some(FileInfo {
                         filename: file_path.display().to_string(),
                         size: file_size,
                         index,
                     }),
-                };
-
-                dive_output.dives.push(dive_data);
+                });
             }
             Err(e) => {
                 eprintln!("Error parsing {}: {}", file_path.display(), e);

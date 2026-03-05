@@ -1,60 +1,53 @@
-use clap::{Parser as ClapParser, ValueEnum};
-use libdivecomputer::{Dive, DiveComputer, LibError, Product, Result, Transport};
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum OutputFormat {
-    Json,
-    Xml,
-    #[value(name = "pretty-json")]
-    PrettyJson,
-}
+use clap::Parser as ClapParser;
+use libdivecomputer::{Context, Descriptor, LogLevel, Result, Transport, scan};
 
 #[derive(ClapParser, Debug)]
 #[command(author, version, about = "Scan for dive computers", long_about = None)]
 struct Args {
     /// Device name (e.g., "Shearwater Petrel 3")
     #[arg(short, long)]
-    device: String,
+    device: Option<String>,
 
-    /// Device transport
+    /// Device transport (Serial, USB, BLE, etc.)
     #[arg(short = 't', long)]
     transport: Option<Transport>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct DiveOutput {
-    product: Product,
-    dives: Vec<Dive>,
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
 
-    let dive_computer = DiveComputer::new();
+    let ctx = Context::builder().log_level(LogLevel::Warning).build()?;
 
-    let product = dive_computer
-        .vendors()?
-        .iter()
-        .flat_map(|vendor| vendor.products())
-        .find(|item| {
-            let full_name = format!("{} {}", item.vendor, item.name);
-
-            args.device == full_name || args.device == item.name
-        })
-        .ok_or(LibError::Other("Device not found".to_string()))?;
-
+    // Determine which transports to scan.
     let transports = if let Some(transport) = args.transport {
         vec![transport]
+    } else if let Some(ref device_name) = args.device {
+        // Find the descriptor and use its supported transports.
+        if let Some(desc) = Descriptor::find_by_name(&ctx, device_name)? {
+            desc.transport_list()
+        } else {
+            eprintln!("Device '{}' not found in descriptor database", device_name);
+            return Ok(());
+        }
     } else {
-        product.transports.clone()
+        // Scan all available transports.
+        ctx.get_transports().to_vec()
     };
 
     for transport in transports {
-        println!("\nScanning {transport:?} devices...");
-        for device in dive_computer.scan(&product, transport).await? {
-            println!("{device:?}");
+        println!("\nScanning {transport} devices...");
+        match scan(&ctx, transport).execute() {
+            Ok(devices) => {
+                for device in &devices {
+                    println!("  Found: {} ({})", device.name, device.connection);
+                }
+                if devices.is_empty() {
+                    println!("  No devices found.");
+                }
+            }
+            Err(e) => {
+                eprintln!("  Error scanning: {e}");
+            }
         }
     }
 

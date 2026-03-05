@@ -7,73 +7,89 @@ use std::{
 use libdivecomputer_sys as ffi;
 
 use crate::{
-    device::Transport,
     error::{LibError, Result},
+    status::Status,
+    transport::TransportSet,
 };
 
-#[derive(Debug, Clone, Hash, PartialEq, PartialOrd, Ord, Eq)]
+type LogCallback = Box<dyn Fn(LogLevel, &str)>;
+
+/// Wrapper around `dc_context_t`.
 pub struct Context {
     pub(crate) ptr: *mut ffi::dc_context_t,
-}
-
-impl Default for Context {
-    fn default() -> Self {
-        let mut ptr = ptr::null_mut();
-
-        let status = unsafe { ffi::dc_context_new(&mut ptr) };
-        if status != ffi::DC_STATUS_SUCCESS {
-            panic!("failed to create context:{status}")
-        }
-
-        Self { ptr }
-    }
+    /// Stored so the closure is freed on drop.
+    _log_callback: Option<LogCallback>,
 }
 
 impl Context {
+    /// Create a new context. Prefer `Context::builder()` for configuration.
+    pub fn new() -> Result<Self> {
+        let mut ptr = ptr::null_mut();
+        let status = unsafe { ffi::dc_context_new(&mut ptr) };
+        Status::check(status, "failed to create context")?;
+        Ok(Self {
+            ptr,
+            _log_callback: None,
+        })
+    }
+
+    /// Create a context builder for configuration.
+    pub fn builder() -> ContextBuilder {
+        ContextBuilder::default()
+    }
+
     pub(crate) fn ptr(&self) -> *mut ffi::dc_context_t {
         self.ptr
     }
 
+    /// Set the log level.
     pub fn set_loglevel(&mut self, loglevel: LogLevel) -> Result<()> {
         let status = unsafe { ffi::dc_context_set_loglevel(self.ptr, loglevel as _) };
-
-        if status == ffi::DC_STATUS_SUCCESS {
-            Ok(())
-        } else {
-            Err(LibError::status_with_context(
-                status,
-                "failed to set loglevel",
-            ))
-        }
+        Status::check(status, "failed to set loglevel")
     }
 
+    /// Set the log callback function.
     pub fn set_logfunc<F>(&mut self, callback: F) -> Result<()>
     where
         F: Fn(LogLevel, &str) + 'static,
     {
+        let boxed: LogCallback = Box::new(callback);
+        let raw = Box::into_raw(Box::new(boxed));
+
         let status = unsafe {
-            ffi::dc_context_set_logfunc(
-                self.ptr,
-                Some(log_callback_wrapper::<F>),
-                Box::into_raw(Box::new(callback)) as *mut _,
-            )
+            ffi::dc_context_set_logfunc(self.ptr, Some(log_callback_wrapper), raw as *mut _)
         };
 
-        if status == ffi::DC_STATUS_SUCCESS {
-            Ok(())
-        } else {
-            Err(LibError::status_with_context(
+        if status != ffi::DC_STATUS_SUCCESS {
+            // Reclaim the box to avoid leak on error.
+            unsafe { drop(Box::from_raw(raw)) };
+            return Err(LibError::status_with_context(
                 status,
                 "failed to set logfunc",
-            ))
+            ));
         }
+
+        // Free any previous callback, store the new one.
+        self._log_callback = Some(unsafe { *Box::from_raw(raw) });
+
+        Ok(())
     }
 
-    pub fn get_transports(&self) -> Vec<Transport> {
+    /// Get the set of transports supported on this platform.
+    pub fn get_transports(&self) -> TransportSet {
         if self.ptr.is_null() {
-            return Vec::new();
+            return TransportSet::from_bits(0);
         }
-        unsafe { Transport::vec_from_bitflag(ffi::dc_context_get_transports(self.ptr as *mut _)) }
+        let bits = unsafe { ffi::dc_context_get_transports(self.ptr as *mut _) };
+        TransportSet::from_bits(bits)
+    }
+}
+
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("open", &!self.ptr.is_null())
+            .finish()
     }
 }
 
@@ -90,9 +106,46 @@ impl Drop for Context {
 unsafe impl Send for Context {}
 unsafe impl Sync for Context {}
 
-// Log level enum
+/// Builder for `Context`.
+#[derive(Default)]
+pub struct ContextBuilder {
+    log_level: Option<LogLevel>,
+    log_fn: Option<LogCallback>,
+}
+
+impl ContextBuilder {
+    pub fn log_level(mut self, level: LogLevel) -> Self {
+        self.log_level = Some(level);
+        self
+    }
+
+    pub fn log_fn<F>(mut self, f: F) -> Self
+    where
+        F: Fn(LogLevel, &str) + 'static,
+    {
+        self.log_fn = Some(Box::new(f));
+        self
+    }
+
+    pub fn build(self) -> Result<Context> {
+        let mut ctx = Context::new()?;
+
+        if let Some(level) = self.log_level {
+            ctx.set_loglevel(level)?;
+        }
+
+        if let Some(callback) = self.log_fn {
+            ctx.set_logfunc(callback)?;
+        }
+
+        Ok(ctx)
+    }
+}
+
+/// Log level for the libdivecomputer context.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u32)]
+#[non_exhaustive]
 pub enum LogLevel {
     None = ffi::DC_LOGLEVEL_NONE,
     Error = ffi::DC_LOGLEVEL_ERROR,
@@ -115,8 +168,7 @@ impl Display for LogLevel {
     }
 }
 
-// Callback wrapper
-extern "C" fn log_callback_wrapper<F>(
+extern "C" fn log_callback_wrapper(
     _context: *mut ffi::dc_context_t,
     loglevel: ffi::dc_loglevel_t,
     _file: *const c_char,
@@ -124,11 +176,9 @@ extern "C" fn log_callback_wrapper<F>(
     _function: *const c_char,
     message: *const c_char,
     userdata: *mut c_void,
-) where
-    F: Fn(LogLevel, &str),
-{
+) {
     unsafe {
-        let callback = &*(userdata as *const F);
+        let callback = &*(userdata as *const Box<dyn Fn(LogLevel, &str)>);
         let level = match loglevel {
             ffi::DC_LOGLEVEL_ERROR => LogLevel::Error,
             ffi::DC_LOGLEVEL_WARNING => LogLevel::Warning,

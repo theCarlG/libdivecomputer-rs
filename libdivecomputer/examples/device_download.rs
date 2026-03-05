@@ -1,9 +1,11 @@
 use std::path::PathBuf;
 
 use clap::{Parser as ClapParser, ValueEnum};
-use libdivecomputer::{Dive, DiveComputer, Family, LibError, Product, Result, Transport};
+use libdivecomputer::{
+    Context, Descriptor, Device, DeviceEvent, Dive, DownloadOptions, IoStream, LogLevel, Result,
+    Transport, scan,
+};
 use serde::{Deserialize, Serialize};
-use tokio::fs;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum OutputFormat {
@@ -26,100 +28,89 @@ struct Args {
 
     /// Device name (e.g., "Shearwater Petrel 3")
     #[arg(short, long)]
-    device: Option<String>,
-
-    /// Device family type
-    #[arg(short = 'f', long)]
-    family: Option<Family>,
+    device: String,
 
     /// Device transport
     #[arg(short = 't', long)]
     transport: Transport,
 
-    /// Device fingerprint
+    /// Device fingerprint (hex string for incremental download)
     #[arg(long)]
     fingerprint: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct DiveOutput {
-    product: Product,
+    device: String,
     dives: Vec<Dive>,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     let args = Args::parse();
 
-    let dive_computer = DiveComputer::new();
+    let ctx = Context::builder().log_level(LogLevel::Warning).build()?;
 
-    let product = if let Some(device_name) = &args.device {
-        dive_computer
-            .vendors()?
-            .iter()
-            .flat_map(|vendor| vendor.products())
-            .find(|item| {
-                let full_name = format!("{} {}", item.vendor, item.name);
+    let desc = Descriptor::find_by_name(&ctx, &args.device)?
+        .ok_or_else(|| libdivecomputer::LibError::DescriptorNotFound(args.device.clone()))?;
 
-                device_name == &full_name || device_name == &item.name
-            })
-            .ok_or(LibError::Other("Device not found".to_string()))
-    } else if let Some(family) = &args.family {
-        dive_computer
-            .vendors()?
-            .iter()
-            .flat_map(|vendor| vendor.products())
-            .find(|product| product.family == *family)
-            .ok_or(LibError::Other("Device family not found".to_string()))
-    } else {
-        Err(LibError::Other(
-            "No device name or family specified".to_string(),
-        ))
-    }?;
+    // Scan for devices.
+    println!("Scanning {} devices...", args.transport);
+    let devices = scan(&ctx, args.transport).execute()?;
+    let device_info = devices
+        .into_iter()
+        .next()
+        .ok_or_else(|| libdivecomputer::LibError::DeviceError("No device found".into()))?;
 
-    let mut dive_output = DiveOutput {
-        dives: Vec::new(),
-        product: product.clone(),
-    };
+    println!("Connecting to {}...", device_info.name);
 
-    let transport = product
-        .transports
-        .iter()
-        .find(|transport| **transport == args.transport)
-        .ok_or(LibError::Other("invalid transport".to_string()))?;
+    let iostream = IoStream::open(&ctx, &device_info.connection)?;
+    let dev = Device::open(&ctx, &desc, iostream)?;
 
-    println!("Scanning {transport:?} devices...");
-    let mut devices = dive_computer.scan(&product, *transport).await?;
-    let Some(device) = devices.next() else {
-        return Err(LibError::Other("No device found".to_string()));
-    };
+    let fp_bytes = args
+        .fingerprint
+        .as_ref()
+        .map(|fp| libdivecomputer::device::hex_string_to_bytes(fp))
+        .transpose()
+        .map_err(|e| libdivecomputer::LibError::ParseError(e.to_string()))?;
 
-    let mut iter = dive_computer
-        .download(&product, device, args.fingerprint)
-        .await?;
+    let dives = dev.download_dives(&mut DownloadOptions {
+        fingerprint: fp_bytes.as_deref(),
+        on_event: Some(Box::new(|event| match event {
+            DeviceEvent::Progress { current, maximum } => {
+                println!(
+                    "Progress: {:.1}%",
+                    100.0 * (current as f64) / (maximum as f64)
+                );
+            }
+            DeviceEvent::DevInfo { model, serial, .. } => {
+                println!("Device: model={model}, serial={serial}");
+            }
+            _ => {}
+        })),
+    })?;
 
-    while let Some(dive) = iter.next() {
+    for dive in &dives {
         println!(
-            "Dive {}m {} min at {}",
+            "Dive {:.1}m {} min at {}",
             dive.max_depth,
             dive.duration.as_secs() / 60,
-            dive.start.to_string()
+            dive.start,
         );
-        dive_output.dives.push(dive);
     }
 
-    let output_string =
-        match args.format {
-            OutputFormat::Json => serde_json::to_string(&dive_output)
-                .map_err(|err| LibError::Other(err.to_string()))?,
-            OutputFormat::PrettyJson => serde_json::to_string_pretty(&dive_output)
-                .map_err(|err| LibError::Other(err.to_string()))?,
-            OutputFormat::Xml => serde_xml_rs::to_string(&dive_output)
-                .map_err(|err| LibError::Other(err.to_string()))?,
-        };
+    let output = DiveOutput {
+        device: args.device,
+        dives,
+    };
+
+    let output_string = match args.format {
+        OutputFormat::Json => serde_json::to_string(&output).unwrap(),
+        OutputFormat::PrettyJson => serde_json::to_string_pretty(&output).unwrap(),
+        OutputFormat::Xml => serde_xml_rs::to_string(&output).unwrap(),
+    };
 
     if let Some(output_path) = &args.output {
-        fs::write(output_path, output_string).await?;
+        std::fs::write(output_path, output_string)?;
     } else {
         println!("{output_string}");
     }

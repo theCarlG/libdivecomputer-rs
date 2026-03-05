@@ -13,7 +13,6 @@ use crate::{
 };
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[repr(C)]
 pub struct Dive {
     pub fingerprint: Fingerprint,
     pub start: jiff::Timestamp,
@@ -22,9 +21,9 @@ pub struct Dive {
     pub avg_depth: Option<f64>,
     pub gasmixes: Vec<Gasmix>,
     pub atmospheric_pressure: Option<f64>,
-    pub temperature_surface: f32,
-    pub temperature_minimum: f32,
-    pub temperature_maximum: f32,
+    pub temperature_surface: Option<f64>,
+    pub temperature_minimum: Option<f64>,
+    pub temperature_maximum: Option<f64>,
     pub tanks: Vec<Tank>,
     pub dive_mode: DiveMode,
     pub deco_model: DecoModel,
@@ -34,7 +33,7 @@ pub struct Dive {
     pub metadata: HashMap<String, String>,
 }
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Fingerprint {
     pub(crate) data: Vec<u8>,
 }
@@ -42,6 +41,10 @@ pub struct Fingerprint {
 impl Fingerprint {
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.data
     }
 }
 
@@ -101,7 +104,7 @@ impl fmt::Debug for Fingerprint {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Salinity {
     pub kind: SalinityKind,
     pub density: f64,
@@ -126,7 +129,8 @@ impl Display for Salinity {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum SalinityKind {
     #[default]
     Fresh,
@@ -142,7 +146,7 @@ impl Display for SalinityKind {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Location {
     pub latitude: f64,
     pub longitude: f64,
@@ -151,21 +155,16 @@ pub struct Location {
 
 impl From<ffi::dc_location_t> for Location {
     fn from(value: ffi::dc_location_t) -> Self {
-        let ffi::dc_location_t {
-            latitude,
-            longitude,
-            altitude,
-        } = value;
-
         Self {
-            latitude,
-            longitude,
-            altitude,
+            latitude: value.latitude,
+            longitude: value.longitude,
+            altitude: value.altitude,
         }
     }
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
 pub enum DiveMode {
     #[default]
     None,
@@ -204,40 +203,34 @@ impl From<String> for DiveMode {
 
 impl fmt::Display for DiveMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Self::None => "None",
-                Self::Freedive => "Freedive",
-                Self::Gauge => "Gauge",
-                Self::OC => "OC",
-                Self::CCR => "CCR",
-                Self::SCR => "SCR",
-            }
-        )
+        let s = match self {
+            Self::None => "None",
+            Self::Freedive => "Freedive",
+            Self::Gauge => "Gauge",
+            Self::OC => "OC",
+            Self::CCR => "CCR",
+            Self::SCR => "SCR",
+        };
+        write!(f, "{s}")
     }
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum DecoModel {
     #[default]
     None,
-
     Buhlmann {
         conservatism: i32,
         low: u32,
         high: u32,
     },
-
     Vpm {
         conservatism: i32,
     },
-
     Rgbm {
         conservatism: i32,
     },
-
     Dciem {
         conservatism: i32,
     },
@@ -269,45 +262,37 @@ impl From<ffi::dc_decomodel_t> for DecoModel {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Tank {
-    pub gasmix_idx: Option<usize>, // Gas mix index
+    pub gasmix_idx: Option<usize>,
     pub kind: TankKind,
-    pub volume: f64,         // Volume (liter)
-    pub work_pressure: f64,  // Work pressure (bar)
-    pub begin_pressure: f64, // Begin pressure (bar)
-    pub end_pressure: f64,   // End pressure (bar)
+    pub volume: f64,
+    pub work_pressure: f64,
+    pub begin_pressure: f64,
+    pub end_pressure: f64,
     pub usage: TankUsage,
 }
 
 impl From<ffi::dc_tank_t> for Tank {
     fn from(value: ffi::dc_tank_t) -> Self {
-        let ffi::dc_tank_t {
-            gasmix,
-            type_,
-            volume,
-            workpressure: work_pressure,
-            beginpressure: begin_pressure,
-            endpressure: end_pressure,
-            usage,
-        } = value;
-        let gasmix_idx = if gasmix == ffi::DC_GASMIX_UNKNOWN {
+        let gasmix_idx = if value.gasmix == ffi::DC_GASMIX_UNKNOWN {
             None
         } else {
-            Some(gasmix as usize)
+            Some(value.gasmix as usize)
         };
 
         Self {
             gasmix_idx,
-            kind: TankKind::from(type_),
-            volume,
-            work_pressure,
-            begin_pressure,
-            end_pressure,
-            usage: TankUsage::from(usage),
+            kind: TankKind::from(value.type_),
+            volume: value.volume,
+            work_pressure: value.workpressure,
+            begin_pressure: value.beginpressure,
+            end_pressure: value.endpressure,
+            usage: TankUsage::from(value.usage),
         }
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TankKind {
     #[default]
     None,
@@ -325,7 +310,8 @@ impl From<u32> for TankKind {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum TankUsage {
     #[default]
     None,
@@ -353,7 +339,7 @@ impl From<ffi::dc_usage_t> for GasUsage {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Gasmix {
     pub helium: f64,
     pub oxygen: f64,
@@ -363,18 +349,11 @@ pub struct Gasmix {
 
 impl From<ffi::dc_gasmix_t> for Gasmix {
     fn from(value: ffi::dc_gasmix_t) -> Self {
-        let ffi::dc_gasmix_t {
-            helium,
-            oxygen,
-            nitrogen,
-            usage,
-        } = value;
-
         Self {
-            helium,
-            oxygen,
-            nitrogen,
-            usage: GasUsage::from(usage),
+            helium: value.helium,
+            oxygen: value.oxygen,
+            nitrogen: value.nitrogen,
+            usage: GasUsage::from(value.usage),
         }
     }
 }
@@ -382,7 +361,7 @@ impl From<ffi::dc_gasmix_t> for Gasmix {
 impl Default for Gasmix {
     fn default() -> Self {
         Self {
-            helium: 0.,
+            helium: 0.0,
             oxygen: 0.21,
             nitrogen: 0.79,
             usage: GasUsage::default(),
@@ -390,7 +369,8 @@ impl Default for Gasmix {
     }
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum GasUsage {
     #[default]
     None,
@@ -434,7 +414,7 @@ pub struct DiveSample {
     pub time: Duration,
     pub depth: f64,
     pub gasmix: Option<Gasmix>,
-    pub temperature: f64,
+    pub temperature: Option<f64>,
     pub event: Option<DiveEvent>,
     pub rbt: Option<Duration>,
     pub heartbeat: Option<u16>,
@@ -447,42 +427,34 @@ pub struct DiveSample {
     pub deco: Option<Deco>,
 }
 
-impl From<&DiveSample> for DiveSample {
-    fn from(value: &DiveSample) -> Self {
-        let DiveSample {
-            setpoint,
-            deco,
-            cns,
-            heartbeat,
-            bearing,
-            ..
-        } = value;
-
+impl DiveSample {
+    /// Create a new sample carrying forward persistent fields from the previous sample.
+    pub fn carry_forward(prev: &DiveSample) -> Self {
         Self {
-            setpoint: *setpoint,
-            deco: deco.clone(),
-            cns: *cns,
-            heartbeat: *heartbeat,
-            bearing: *bearing,
+            setpoint: prev.setpoint,
+            deco: prev.deco,
+            cns: prev.cns,
+            heartbeat: prev.heartbeat,
+            bearing: prev.bearing,
             ..Default::default()
         }
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Ppo2 {
     pub sensor: Sensor,
     pub bar: f64,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct O2Sensor {
     pub sensor: Sensor,
     pub ppo2: f64,
     pub millivolt: f64,
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Deco {
     pub kind: DecoKind,
     pub time: Duration,
@@ -509,7 +481,8 @@ impl fmt::Display for Deco {
     }
 }
 
-#[derive(Debug, Default, Clone, Deserialize, Serialize)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize)]
+#[non_exhaustive]
 pub enum Sensor {
     #[default]
     None,
@@ -544,24 +517,25 @@ impl From<u32> for Sensor {
     }
 }
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[non_exhaustive]
 pub enum DecoKind {
     #[default]
     None,
     NDL,
     DecoStop {
-        depth: f64, // meters
+        depth: f64,
     },
     DeepStop {
-        depth: f64, // meters
+        depth: f64,
     },
     SafetyStop {
-        depth: f64, // meters
+        depth: f64,
     },
 }
 
 impl DecoKind {
-    pub fn new(type_: ffi::dc_deco_type_t, depth: f64) -> Self {
+    pub(crate) fn new(type_: ffi::dc_deco_type_t, depth: f64) -> Self {
         match type_ {
             ffi::DC_DECO_NDL => Self::NDL,
             ffi::DC_DECO_DECOSTOP => Self::DecoStop { depth },

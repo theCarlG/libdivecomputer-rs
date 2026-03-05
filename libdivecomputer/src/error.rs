@@ -1,89 +1,78 @@
-//! Error types for the libdivecomputer crate.
-
 use std::fmt;
 
-use crate::common::Status;
+use crate::status::Status;
 
 /// The main error type for this crate.
 #[derive(Debug, thiserror::Error)]
 pub enum LibError {
-    /// A libdivecomputer status error
+    /// A libdivecomputer FFI status error.
     #[error("libdivecomputer: {1:?}: {0:?}")]
     Status(Status, Option<String>),
 
-    /// Invalid arguments provided
+    /// Invalid arguments provided.
     #[error("invalid argument: {0}")]
     InvalidArguments(String),
 
-    /// Device not found or not accessible
+    /// Device not found or not accessible.
     #[error("device error: {0}")]
     DeviceError(String),
 
-    /// Parse error when reading dive data
+    /// Parse error when reading dive data.
     #[error("parse error: {0}")]
     ParseError(String),
 
-    /// I/O error
+    /// Requested descriptor not found.
+    #[error("descriptor not found: {0}")]
+    DescriptorNotFound(String),
+
+    /// Transport not supported for this operation.
+    #[error("transport not supported: {0}")]
+    TransportNotSupported(String),
+
+    /// No Bluetooth adapter available.
+    #[error("no bluetooth adapter found")]
+    NoBluetoothAdapter,
+
+    /// BLE device not found during scan.
+    #[error("BLE device not found: {0}")]
+    BleDeviceNotFound(String),
+
+    /// I/O error.
     #[error(transparent)]
     Io(#[from] std::io::Error),
-    //
-    // /// Btleplug error
+
+    /// Btleplug error.
+    #[cfg(feature = "ble")]
     #[error(transparent)]
     Btleplug(#[from] btleplug::Error),
 
-    /// Parse error when reading dive data
+    /// Integer parse error.
     #[error("parse error: {0}")]
     ParseInt(#[from] std::num::ParseIntError),
 
-    /// Incompatible library version
+    /// Incompatible library version.
     #[error("invalid version (expected: {expected}), (found: {found})")]
-    InvalidVersion {
-        /// Expected version
-        expected: String,
-        /// Found version
-        found: String,
-    },
+    InvalidVersion { expected: String, found: String },
 
-    /// UTF-8 conversion error
+    /// UTF-8 conversion error.
     #[error(transparent)]
     Utf8(#[from] std::str::Utf8Error),
 
-    /// Jiff error
+    /// Jiff error.
     #[error(transparent)]
     Jiff(#[from] jiff::Error),
 
-    /// std lib channel recv error
-    #[error(transparent)]
-    Recv(#[from] std::sync::mpsc::RecvError),
-
-    #[error("channel error: {0}")]
-    Channel(String),
-
-    /// Null pointer error
+    /// Null pointer error.
     #[error("null pointer")]
     NullPointer,
 
-    /// Generic error with message
-    #[error("unknown error: {0}")]
-    Other(String),
-
+    /// Operation was cancelled.
     #[error("cancelled")]
     Cancelled,
 
+    /// Unknown error.
     #[error("unknown error")]
     Unknown,
-}
-
-impl<T> From<tokio::sync::mpsc::error::SendError<T>> for LibError {
-    fn from(err: tokio::sync::mpsc::error::SendError<T>) -> Self {
-        LibError::Channel(err.to_string())
-    }
-}
-
-impl From<tokio::sync::oneshot::error::RecvError> for LibError {
-    fn from(err: tokio::sync::oneshot::error::RecvError) -> Self {
-        LibError::Channel(err.to_string())
-    }
 }
 
 impl LibError {
