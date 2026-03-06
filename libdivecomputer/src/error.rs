@@ -37,6 +37,10 @@ pub enum LibError {
     #[error("BLE device not found: {0}")]
     BleDeviceNotFound(String),
 
+    /// BLE service not found on device.
+    #[error("BLE service not found: {0}")]
+    BleServiceNotFound(String),
+
     /// I/O error.
     #[error(transparent)]
     Io(#[from] std::io::Error),

@@ -202,15 +202,13 @@ struct BleTransport {
 }
 
 impl BleTransport {
-    async fn connect(
-        mac_address: &str,
-    ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    async fn connect(mac_address: &str) -> Result<Self> {
         let manager = Manager::new().await?;
         let adapters = manager.adapters().await?;
         let adapter = adapters
             .into_iter()
             .next()
-            .ok_or("No Bluetooth adapter found")?;
+            .ok_or(LibError::NoBluetoothAdapter)?;
 
         let peripheral = Self::find_peripheral(&adapter, mac_address).await?;
         let device_name = peripheral
@@ -374,10 +372,7 @@ impl BleTransport {
         true
     }
 
-    async fn find_peripheral(
-        adapter: &Adapter,
-        mac_address: &str,
-    ) -> std::result::Result<Peripheral, Box<dyn std::error::Error + Send + Sync>> {
+    async fn find_peripheral(adapter: &Adapter, mac_address: &str) -> Result<Peripheral> {
         let known_uuids: Vec<Uuid> = KNOWN_SERVICES.iter().map(|(uuid, _)| *uuid).collect();
         let scan_filter = ScanFilter {
             services: known_uuids,
@@ -396,15 +391,14 @@ impl BleTransport {
             }
         }
 
-        Err(format!("Device {mac_address} not found").into())
+        Err(LibError::BleDeviceNotFound(format!(
+            "device {mac_address} not found after 5s scan"
+        )))
     }
 
     async fn find_preferred_service_and_characteristics(
         peripheral: &Peripheral,
-    ) -> std::result::Result<
-        (Service, Characteristic, Characteristic),
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
+    ) -> Result<(Service, Characteristic, Characteristic)> {
         let services = peripheral.services();
 
         for (uuid, _name) in KNOWN_SERVICES {
@@ -434,74 +428,73 @@ impl BleTransport {
             }
         }
 
-        Err("No suitable BLE service found".into())
+        let discovered: Vec<String> = services.iter().map(|s| s.uuid.to_string()).collect();
+        Err(LibError::BleServiceNotFound(format!(
+            "no compatible GATT service found (discovered: [{}])",
+            discovered.join(", ")
+        )))
     }
 
-    fn write_blocking(
-        &self,
-        data: &[u8],
-    ) -> std::result::Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-        let (tx, rx) = oneshot::channel();
-        self.event_tx.send(BleEvent::Write {
-            data: data.to_vec(),
-            response: tx,
-        })?;
-        match rx.blocking_recv() {
-            Ok(Ok(size)) => Ok(size),
-            Ok(Err(err)) => Err(err.into()),
-            Err(_) => Err("Channel closed".into()),
-        }
-    }
-
-    fn read_blocking(
-        &self,
-        buffer: &mut [u8],
-    ) -> std::result::Result<usize, Box<dyn std::error::Error + Send + Sync>> {
-        let (tx, rx) = oneshot::channel();
-        self.event_tx.send(BleEvent::Read {
-            size: buffer.len(),
-            response: tx,
-        })?;
-        match rx.blocking_recv() {
-            Ok(Ok(data)) => {
-                let n = std::cmp::min(data.len(), buffer.len());
-                buffer[..n].copy_from_slice(&data[..n]);
-                Ok(n)
-            }
-            Ok(Err(err)) => Err(err.into()),
-            Err(_) => Err("No data available".into()),
-        }
-    }
-
-    fn read_characteristic_blocking(
-        &self,
-        uuid: Uuid,
-        buffer: &mut [u8],
-    ) -> std::result::Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+    fn write_blocking(&self, data: &[u8]) -> Result<usize> {
         let (tx, rx) = oneshot::channel();
         self.event_tx
-            .send(BleEvent::ReadCharacteristic { uuid, response: tx })?;
+            .send(BleEvent::Write {
+                data: data.to_vec(),
+                response: tx,
+            })
+            .map_err(|_| LibError::DeviceError("BLE event channel closed".to_string()))?;
+        match rx.blocking_recv() {
+            Ok(Ok(size)) => Ok(size),
+            Ok(Err(err)) => Err(LibError::DeviceError(err)),
+            Err(_) => Err(LibError::DeviceError("BLE channel closed".to_string())),
+        }
+    }
+
+    fn read_blocking(&self, buffer: &mut [u8]) -> Result<usize> {
+        let (tx, rx) = oneshot::channel();
+        self.event_tx
+            .send(BleEvent::Read {
+                size: buffer.len(),
+                response: tx,
+            })
+            .map_err(|_| LibError::DeviceError("BLE event channel closed".to_string()))?;
         match rx.blocking_recv() {
             Ok(Ok(data)) => {
                 let n = std::cmp::min(data.len(), buffer.len());
                 buffer[..n].copy_from_slice(&data[..n]);
                 Ok(n)
             }
-            Ok(Err(err)) => Err(err.into()),
-            Err(_) => Err("No data available".into()),
+            Ok(Err(err)) => Err(LibError::DeviceError(err)),
+            Err(_) => Err(LibError::DeviceError("BLE channel closed".to_string())),
         }
     }
 
-    fn poll_blocking(
-        &self,
-        timeout: Duration,
-    ) -> std::result::Result<bool, Box<dyn std::error::Error + Send + Sync>> {
+    fn read_characteristic_blocking(&self, uuid: Uuid, buffer: &mut [u8]) -> Result<usize> {
         let (tx, rx) = oneshot::channel();
-        self.event_tx.send(BleEvent::Poll {
-            timeout,
-            response: tx,
-        })?;
-        Ok(rx.blocking_recv()?)
+        self.event_tx
+            .send(BleEvent::ReadCharacteristic { uuid, response: tx })
+            .map_err(|_| LibError::DeviceError("BLE event channel closed".to_string()))?;
+        match rx.blocking_recv() {
+            Ok(Ok(data)) => {
+                let n = std::cmp::min(data.len(), buffer.len());
+                buffer[..n].copy_from_slice(&data[..n]);
+                Ok(n)
+            }
+            Ok(Err(err)) => Err(LibError::DeviceError(err)),
+            Err(_) => Err(LibError::DeviceError("BLE channel closed".to_string())),
+        }
+    }
+
+    fn poll_blocking(&self, timeout: Duration) -> Result<bool> {
+        let (tx, rx) = oneshot::channel();
+        self.event_tx
+            .send(BleEvent::Poll {
+                timeout,
+                response: tx,
+            })
+            .map_err(|_| LibError::DeviceError("BLE event channel closed".to_string()))?;
+        rx.blocking_recv()
+            .map_err(|_| LibError::DeviceError("BLE channel closed".to_string()))
     }
 
     fn set_timeout(&self, timeout: Duration) {
@@ -657,9 +650,7 @@ pub fn ble_iostream_open(ctx: &crate::context::Context, mac_address: &str) -> Re
 
     let addr = mac_address.strip_prefix("LE:").unwrap_or(mac_address);
 
-    let transport = rt
-        .block_on(BleTransport::connect(addr))
-        .map_err(|e| LibError::BleDeviceNotFound(e.to_string()))?;
+    let transport = rt.block_on(BleTransport::connect(addr))?;
 
     let io_ptr = Box::into_raw(Box::new(transport)) as *mut c_void;
 
