@@ -45,9 +45,7 @@ impl Parser {
         data: &[u8],
     ) -> Result<Self> {
         let mut ptr = ptr::null_mut();
-        let status = unsafe {
-            ffi::dc_parser_new(&mut ptr, device_ptr, data.as_ptr(), data.len())
-        };
+        let status = unsafe { ffi::dc_parser_new(&mut ptr, device_ptr, data.as_ptr(), data.len()) };
         Status::check(status, "failed to create parser from device")?;
         Ok(Self { ptr })
     }
@@ -56,13 +54,7 @@ impl Parser {
     pub fn from_descriptor(ctx: &Context, desc: &Descriptor, data: &[u8]) -> Result<Self> {
         let mut ptr = ptr::null_mut();
         let status = unsafe {
-            ffi::dc_parser_new2(
-                &mut ptr,
-                ctx.ptr(),
-                desc.ptr,
-                data.as_ptr(),
-                data.len(),
-            )
+            ffi::dc_parser_new2(&mut ptr, ctx.ptr(), desc.ptr, data.as_ptr(), data.len())
         };
         Status::check(status, "failed to create parser from descriptor")?;
         Ok(Self { ptr })
@@ -84,6 +76,12 @@ impl Parser {
     pub fn set_density(&self, density: f64) -> Result<()> {
         let status = unsafe { ffi::dc_parser_set_density(self.ptr, density) };
         Status::check(status, "failed to set water density")
+    }
+
+    /// Get the parser family (device type).
+    pub fn family(&self) -> crate::family::Family {
+        let raw = unsafe { ffi::dc_parser_get_type(self.ptr) };
+        crate::family::Family::from(raw)
     }
 
     /// Parse all fields and samples into a `Dive`.
@@ -391,11 +389,21 @@ extern "C" fn sample_callback(
                 let kind = EventKind::from(value.event.type_);
                 let time =
                     Duration::from_secs(value.event.time as u64 + parse_data.sample.time.as_secs());
+                let name = if value.event.name.is_null() {
+                    None
+                } else {
+                    Some(
+                        CStr::from_ptr(value.event.name)
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                };
                 parse_data.sample.events.push(DiveEvent {
                     kind,
                     time,
                     flags: value.event.flags,
                     value: value.event.value,
+                    name,
                 });
             }
 
@@ -445,6 +453,10 @@ extern "C" fn sample_callback(
                     time: Duration::from_secs(value.deco.time as u64),
                     tts: Duration::from_secs(value.deco.tts as u64),
                 });
+            }
+
+            ffi::DC_SAMPLE_TTS => {
+                parse_data.sample.tts = Some(Duration::from_secs(value.time as u64));
             }
 
             ffi::DC_SAMPLE_VENDOR => {

@@ -320,6 +320,12 @@ impl Device {
         DownloadResult { dives, errors }
     }
 
+    /// Get the device family (type).
+    pub fn family(&self) -> crate::family::Family {
+        let raw = unsafe { ffi::dc_device_get_type(self.ptr) };
+        crate::family::Family::from(raw)
+    }
+
     /// Get the raw device pointer (for vendor-specific APIs).
     pub(crate) fn raw_ptr(&self) -> *mut ffi::dc_device_t {
         self.ptr

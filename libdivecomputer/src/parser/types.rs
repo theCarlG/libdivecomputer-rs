@@ -440,6 +440,7 @@ pub struct DiveEvent {
     pub kind: EventKind,
     pub flags: u32,
     pub value: u32,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -458,6 +459,7 @@ pub struct DiveSample {
     pub pressure: Vec<f64>,
     pub cns: f64,
     pub deco: Option<Deco>,
+    pub tts: Option<Duration>,
 }
 
 impl DiveSample {
@@ -466,6 +468,7 @@ impl DiveSample {
         Self {
             setpoint: prev.setpoint,
             deco: prev.deco,
+            tts: prev.tts,
             cns: prev.cns,
             heartbeat: prev.heartbeat,
             bearing: prev.bearing,

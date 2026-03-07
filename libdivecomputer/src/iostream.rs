@@ -7,6 +7,7 @@ use crate::context::Context;
 use crate::device::ConnectionInfo;
 use crate::error::{LibError, Result};
 use crate::status::Status;
+use crate::transport::Transport;
 
 /// Direction for purge operations.
 #[repr(u32)]
@@ -261,6 +262,40 @@ impl IoStream {
         let status = unsafe { ffi::dc_iostream_get_available(self.ptr, &mut value) };
         Status::check(status, "failed to get available bytes")?;
         Ok(value)
+    }
+
+    /// Get the transport type of this iostream.
+    pub fn transport(&self) -> Transport {
+        let raw = unsafe { ffi::dc_iostream_get_transport(self.ptr) };
+        match raw {
+            ffi::DC_TRANSPORT_SERIAL => Transport::Serial,
+            ffi::DC_TRANSPORT_USB => Transport::Usb,
+            ffi::DC_TRANSPORT_USBHID => Transport::UsbHid,
+            ffi::DC_TRANSPORT_IRDA => Transport::Irda,
+            ffi::DC_TRANSPORT_BLUETOOTH => Transport::Bluetooth,
+            ffi::DC_TRANSPORT_BLE => Transport::Ble,
+            ffi::DC_TRANSPORT_USBSTORAGE => Transport::UsbStorage,
+            _ => Transport::Serial, // fallback
+        }
+    }
+
+    /// Perform a transport-specific ioctl request.
+    pub fn ioctl(&self, request: u32, data: &mut [u8]) -> Result<()> {
+        let status = unsafe {
+            ffi::dc_iostream_ioctl(
+                self.ptr,
+                request,
+                data.as_mut_ptr() as *mut std::ffi::c_void,
+                data.len(),
+            )
+        };
+        Status::check(status, "failed to perform iostream ioctl")
+    }
+
+    /// Suspend execution for the specified number of milliseconds.
+    pub fn sleep(&self, milliseconds: u32) -> Result<()> {
+        let status = unsafe { ffi::dc_iostream_sleep(self.ptr, milliseconds) };
+        Status::check(status, "failed to sleep iostream")
     }
 }
 

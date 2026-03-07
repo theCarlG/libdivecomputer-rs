@@ -2,8 +2,12 @@ use libdivecomputer_sys as ffi;
 
 /// Convert a `dc_datetime_t` to a `jiff::Timestamp`.
 pub(crate) fn ffi_to_timestamp(dt: &ffi::dc_datetime_t) -> Result<jiff::Timestamp, jiff::Error> {
-    let civil = jiff::civil::date(dt.year as i16, dt.month as i8, dt.day as i8)
-        .at(dt.hour as i8, dt.minute as i8, dt.second as i8, 0);
+    let civil = jiff::civil::date(dt.year as i16, dt.month as i8, dt.day as i8).at(
+        dt.hour as i8,
+        dt.minute as i8,
+        dt.second as i8,
+        0,
+    );
     if dt.timezone == i32::MIN {
         // DC_TIMEZONE_NONE — treat as UTC
         Ok(civil.to_zoned(jiff::tz::TimeZone::UTC)?.timestamp())
