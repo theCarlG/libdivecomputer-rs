@@ -15,16 +15,13 @@ pub(crate) fn ffi_to_timestamp(dt: &ffi::dc_datetime_t) -> Result<jiff::Timestam
             dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
         )
     } else {
+        let sign = if dt.timezone < 0 { '-' } else { '+' };
+        let abs_tz = dt.timezone.unsigned_abs();
+        let hours = abs_tz / 3600;
+        let minutes = (abs_tz % 3600) / 60;
         format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}{:+03}:{:02}",
-            dt.year,
-            dt.month,
-            dt.day,
-            dt.hour,
-            dt.minute,
-            dt.second,
-            dt.timezone / 3600,
-            (dt.timezone.abs() % 3600) / 60
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}{}{:02}:{:02}",
+            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, sign, hours, minutes
         )
     };
     s.parse()
@@ -96,15 +93,28 @@ mod tests {
     }
 
     #[test]
+    fn ffi_to_timestamp_negative_sub_hour_offset() {
+        // -00:30 = -1800 seconds — previously produced "+00:30" due to truncation bug
+        let dt = make_dt(2025, 1, 1, 0, 0, 0, -1800);
+        let ts = ffi_to_timestamp(&dt).unwrap();
+        // 00:00 at -00:30 = 00:30 UTC
+        assert_eq!(ts.to_string(), "2025-01-01T00:30:00Z");
+    }
+
+    #[test]
     fn timestamp_to_ffi_roundtrip() {
         let ts = jiff::Timestamp::from_second(1750000000).unwrap();
         let dt = timestamp_to_ffi(ts);
-        // Fields should be non-zero (valid date in 2025)
+        // Fields should be valid date components
         assert!(dt.year >= 2025);
         assert!((1..=12).contains(&dt.month));
         assert!((1..=31).contains(&dt.day));
         assert!((0..=23).contains(&dt.hour));
         assert!((0..=59).contains(&dt.minute));
         assert!((0..=59).contains(&dt.second));
+
+        // Converting back should recover the original timestamp
+        let ts2 = ffi_to_timestamp(&dt).unwrap();
+        assert_eq!(ts.as_second(), ts2.as_second());
     }
 }
