@@ -7,10 +7,7 @@ use std::{
 use libdivecomputer_sys as ffi;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    common::EventKind,
-    device::{bytes_to_hex, hex_string_to_bytes},
-};
+use crate::common::EventKind;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Dive {
@@ -46,15 +43,33 @@ impl Fingerprint {
     pub fn as_bytes(&self) -> &[u8] {
         &self.data
     }
+
+    /// Parse a hex string into a fingerprint.
+    ///
+    /// Returns an error if the string has odd length or contains non-hex characters.
+    pub fn from_hex(hex: &str) -> std::result::Result<Self, std::num::ParseIntError> {
+        if !hex.len().is_multiple_of(2) {
+            // Force a ParseIntError by parsing an invalid string.
+            return Err(u8::from_str_radix("xx", 16).unwrap_err());
+        }
+        let data = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+            .collect::<std::result::Result<Vec<u8>, _>>()?;
+        Ok(Self { data })
+    }
+
+    /// Convert the fingerprint to a hex string.
+    pub fn to_hex(&self) -> String {
+        self.data.iter().map(|b| format!("{b:02X}")).collect()
+    }
 }
 
 impl TryFrom<String> for Fingerprint {
     type Error = std::num::ParseIntError;
 
     fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
-        Ok(Self {
-            data: hex_string_to_bytes(&value)?,
-        })
+        Self::from_hex(&value)
     }
 }
 
@@ -62,9 +77,7 @@ impl TryFrom<&String> for Fingerprint {
     type Error = std::num::ParseIntError;
 
     fn try_from(value: &String) -> std::result::Result<Self, Self::Error> {
-        Ok(Self {
-            data: hex_string_to_bytes(value)?,
-        })
+        Self::from_hex(value)
     }
 }
 
@@ -72,9 +85,7 @@ impl TryFrom<&str> for Fingerprint {
     type Error = std::num::ParseIntError;
 
     fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
-        Ok(Self {
-            data: hex_string_to_bytes(value)?,
-        })
+        Self::from_hex(value)
     }
 }
 
@@ -94,13 +105,13 @@ impl From<Vec<u8>> for Fingerprint {
 
 impl fmt::Display for Fingerprint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", bytes_to_hex(&self.data))
+        write!(f, "{}", self.to_hex())
     }
 }
 
 impl fmt::Debug for Fingerprint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Fingerprint(0x{})", bytes_to_hex(&self.data))
+        write!(f, "Fingerprint(0x{})", self.to_hex())
     }
 }
 
@@ -543,5 +554,164 @@ impl DecoKind {
             ffi::DC_DECO_SAFETYSTOP => Self::SafetyStop { depth },
             _ => Self::None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fingerprint_from_hex_valid() {
+        let fp = Fingerprint::from_hex("DEADBEEF").unwrap();
+        assert_eq!(fp.as_bytes(), &[0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn fingerprint_from_hex_lowercase() {
+        let fp = Fingerprint::from_hex("deadbeef").unwrap();
+        assert_eq!(fp.as_bytes(), &[0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn fingerprint_from_hex_odd_length_error() {
+        assert!(Fingerprint::from_hex("ABC").is_err());
+    }
+
+    #[test]
+    fn fingerprint_from_hex_invalid_chars_error() {
+        assert!(Fingerprint::from_hex("GHIJ").is_err());
+    }
+
+    #[test]
+    fn fingerprint_from_hex_empty() {
+        let fp = Fingerprint::from_hex("").unwrap();
+        assert!(fp.is_empty());
+        assert_eq!(fp.as_bytes(), &[]);
+    }
+
+    #[test]
+    fn fingerprint_to_hex_round_trip() {
+        let original = "0A1B2C3D4E5F";
+        let fp = Fingerprint::from_hex(original).unwrap();
+        assert_eq!(fp.to_hex(), original);
+    }
+
+    #[test]
+    fn fingerprint_from_slice() {
+        let bytes: &[u8] = &[1, 2, 3];
+        let fp = Fingerprint::from(bytes);
+        assert_eq!(fp.as_bytes(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn fingerprint_from_vec() {
+        let fp = Fingerprint::from(vec![0xAA, 0xBB]);
+        assert_eq!(fp.as_bytes(), &[0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn fingerprint_try_from_str() {
+        let fp = Fingerprint::try_from("FF00").unwrap();
+        assert_eq!(fp.as_bytes(), &[0xFF, 0x00]);
+    }
+
+    #[test]
+    fn fingerprint_try_from_string() {
+        let s = String::from("AABB");
+        let fp = Fingerprint::try_from(s).unwrap();
+        assert_eq!(fp.as_bytes(), &[0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn fingerprint_try_from_ref_string() {
+        let s = String::from("CCDD");
+        let fp = Fingerprint::try_from(&s).unwrap();
+        assert_eq!(fp.as_bytes(), &[0xCC, 0xDD]);
+    }
+
+    #[test]
+    fn fingerprint_display() {
+        let fp = Fingerprint::from(vec![0xDE, 0xAD]);
+        assert_eq!(format!("{fp}"), "DEAD");
+    }
+
+    #[test]
+    fn fingerprint_debug() {
+        let fp = Fingerprint::from(vec![0xBE, 0xEF]);
+        assert_eq!(format!("{fp:?}"), "Fingerprint(0xBEEF)");
+    }
+
+    #[test]
+    fn fingerprint_is_empty() {
+        assert!(Fingerprint::default().is_empty());
+        assert!(!Fingerprint::from(vec![1]).is_empty());
+    }
+
+    #[test]
+    fn dive_mode_from_string_known() {
+        assert_eq!(DiveMode::from("freedive".to_string()), DiveMode::Freedive);
+        assert_eq!(DiveMode::from("gauge".to_string()), DiveMode::Gauge);
+        assert_eq!(DiveMode::from("oc".to_string()), DiveMode::OC);
+        assert_eq!(DiveMode::from("ccr".to_string()), DiveMode::CCR);
+        assert_eq!(DiveMode::from("scr".to_string()), DiveMode::SCR);
+    }
+
+    #[test]
+    fn dive_mode_from_string_unknown() {
+        assert_eq!(DiveMode::from("unknown".to_string()), DiveMode::None);
+    }
+
+    #[test]
+    fn gas_usage_from_string_known() {
+        assert_eq!(GasUsage::from("oxygen".to_string()), GasUsage::Oxygen);
+        assert_eq!(GasUsage::from("diluent".to_string()), GasUsage::Diluent);
+        assert_eq!(
+            GasUsage::from("open circuit".to_string()),
+            GasUsage::OpenCircuit
+        );
+        assert_eq!(
+            GasUsage::from("opencircuit".to_string()),
+            GasUsage::OpenCircuit
+        );
+    }
+
+    #[test]
+    fn gas_usage_from_string_unknown() {
+        assert_eq!(GasUsage::from("nope".to_string()), GasUsage::None);
+    }
+
+    #[test]
+    fn gasmix_default_is_air() {
+        let air = Gasmix::default();
+        assert!((air.oxygen - 0.21).abs() < f64::EPSILON);
+        assert!((air.nitrogen - 0.79).abs() < f64::EPSILON);
+        assert!((air.helium - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn deco_kind_display() {
+        use std::time::Duration;
+
+        let deco = Deco {
+            kind: DecoKind::NDL,
+            time: Duration::from_secs(300),
+            tts: Duration::ZERO,
+        };
+        assert_eq!(format!("{deco}"), "NDL: 5 min");
+
+        let deco = Deco {
+            kind: DecoKind::DecoStop { depth: 6.0 },
+            time: Duration::from_secs(180),
+            tts: Duration::ZERO,
+        };
+        assert_eq!(format!("{deco}"), "Deco stop: 3 min @ 6m");
+
+        let deco = Deco {
+            kind: DecoKind::SafetyStop { depth: 5.0 },
+            time: Duration::from_secs(180),
+            tts: Duration::ZERO,
+        };
+        assert_eq!(format!("{deco}"), "Safety stop: 3 min @ 5m");
     }
 }

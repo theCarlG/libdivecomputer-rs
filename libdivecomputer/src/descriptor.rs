@@ -3,8 +3,7 @@ use std::{fmt, ptr};
 
 use libdivecomputer_sys as ffi;
 
-use crate::context::Context;
-use crate::error::Result;
+use crate::error::{LibError, Result};
 use crate::family::Family;
 use crate::status::Status;
 use crate::transport::{Transport, TransportSet};
@@ -14,12 +13,14 @@ pub struct Descriptor {
     pub(crate) ptr: *mut ffi::dc_descriptor_t,
 }
 
+// SAFETY: dc_descriptor_t is read-only metadata about device models.
+// All accessor methods only read from the C struct.
 unsafe impl Send for Descriptor {}
 unsafe impl Sync for Descriptor {}
 
 impl Descriptor {
     /// Iterate over all known dive computer descriptors.
-    pub fn iter(_ctx: &Context) -> Result<DescriptorIter> {
+    pub fn iter() -> Result<DescriptorIter> {
         let mut iterator: *mut ffi::dc_iterator_t = ptr::null_mut();
         let status = unsafe { ffi::dc_descriptor_iterator_new(&mut iterator, ptr::null_mut()) };
         Status::check(status, "failed to create descriptor iterator")?;
@@ -27,8 +28,8 @@ impl Descriptor {
     }
 
     /// Find a descriptor by vendor and product name.
-    pub fn find(ctx: &Context, vendor: &str, product: &str) -> Result<Option<Descriptor>> {
-        for desc in Self::iter(ctx)? {
+    pub fn find(vendor: &str, product: &str) -> Result<Option<Descriptor>> {
+        for desc in Self::iter()? {
             if desc.vendor() == vendor && desc.product() == product {
                 return Ok(Some(desc));
             }
@@ -37,14 +38,14 @@ impl Descriptor {
     }
 
     /// Find a descriptor by full name ("Vendor Product").
-    pub fn find_by_name(ctx: &Context, name: &str) -> Result<Option<Descriptor>> {
-        for desc in Self::iter(ctx)? {
+    pub fn find_by_name(name: &str) -> Result<Descriptor> {
+        for desc in Self::iter()? {
             let full_name = format!("{} {}", desc.vendor(), desc.product());
             if full_name == name || desc.product() == name {
-                return Ok(Some(desc));
+                return Ok(desc);
             }
         }
-        Ok(None)
+        Err(LibError::DescriptorNotFound(name.to_string()))
     }
 
     /// Vendor name.
@@ -136,6 +137,7 @@ pub struct DescriptorIter {
     iterator: *mut ffi::dc_iterator_t,
 }
 
+// SAFETY: dc_iterator_t for descriptors only reads from a static internal table.
 unsafe impl Send for DescriptorIter {}
 unsafe impl Sync for DescriptorIter {}
 
@@ -169,14 +171,65 @@ impl Drop for DescriptorIter {
 
 #[cfg(test)]
 mod test {
-    use crate::Context;
-
-    use super::Descriptor;
+    use super::*;
 
     #[test]
     fn test_descriptor_iter() {
-        let ctx = Context::new().unwrap();
-        let count = Descriptor::iter(&ctx).unwrap().count();
+        let count = Descriptor::iter().unwrap().count();
         assert!(count > 0);
+    }
+
+    #[test]
+    fn find_known_vendor_product() {
+        // Suunto EON Steel is a well-known device that should always be in the descriptor table
+        let result = Descriptor::find("Suunto", "EON Steel").unwrap();
+        assert!(result.is_some());
+        let desc = result.unwrap();
+        assert_eq!(desc.vendor(), "Suunto");
+        assert_eq!(desc.product(), "EON Steel");
+    }
+
+    #[test]
+    fn find_unknown_returns_none() {
+        let result = Descriptor::find("NonExistent", "Device").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn find_by_name_known() {
+        let desc = Descriptor::find_by_name("Suunto EON Steel").unwrap();
+        assert_eq!(desc.vendor(), "Suunto");
+        assert_eq!(desc.product(), "EON Steel");
+    }
+
+    #[test]
+    fn find_by_name_unknown() {
+        let err = Descriptor::find_by_name("Nonexistent Device 9999").unwrap_err();
+        assert!(matches!(err, LibError::DescriptorNotFound(_)));
+    }
+
+    #[test]
+    fn descriptor_accessors() {
+        let desc = Descriptor::iter().unwrap().next().unwrap();
+        assert!(!desc.vendor().is_empty());
+        assert!(!desc.product().is_empty());
+        // family and model are valid (no panic)
+        let _ = desc.family();
+        let _ = desc.model();
+    }
+
+    #[test]
+    fn descriptor_transports_non_empty() {
+        // At least some descriptors should have transports
+        let has_transports = Descriptor::iter()
+            .unwrap()
+            .any(|d| !d.transports().to_vec().is_empty());
+        assert!(has_transports);
+    }
+
+    #[test]
+    fn descriptor_display() {
+        let desc = Descriptor::find("Suunto", "EON Steel").unwrap().unwrap();
+        assert_eq!(desc.to_string(), "Suunto EON Steel");
     }
 }

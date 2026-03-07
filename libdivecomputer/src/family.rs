@@ -272,3 +272,64 @@ impl From<&String> for Family {
         Self::from(s.as_str())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_u32_known() {
+        assert_eq!(Family::from(0x00010000u32), Family::SuuntoSolution);
+        assert_eq!(Family::from(0x000A0001u32), Family::ShearwaterPetrel);
+        assert_eq!(Family::from(0x00060002u32), Family::HwOstc3);
+        assert_eq!(Family::from(0x00180000u32), Family::HalcyonSymbios);
+    }
+
+    #[test]
+    fn from_u32_unknown() {
+        assert_eq!(Family::from(0xFFFFFFFFu32), Family::None);
+        assert_eq!(Family::from(0u32), Family::None);
+    }
+
+    #[test]
+    fn from_str_known() {
+        assert_eq!(Family::from("Suunto Solution"), Family::SuuntoSolution);
+        assert_eq!(Family::from("Shearwater Petrel"), Family::ShearwaterPetrel);
+        assert_eq!(Family::from("HW OSTC 3"), Family::HwOstc3);
+        assert_eq!(Family::from("Halcyon Symbios"), Family::HalcyonSymbios);
+    }
+
+    #[test]
+    fn from_str_unknown() {
+        assert_eq!(Family::from("Nonexistent Family"), Family::None);
+    }
+
+    #[test]
+    fn from_ref_string() {
+        let s = String::from("Suunto D9");
+        assert_eq!(Family::from(&s), Family::SuuntoD9);
+    }
+
+    #[test]
+    fn display_formatting() {
+        assert_eq!(Family::None.to_string(), "None");
+        assert_eq!(Family::SuuntoEonSteel.to_string(), "Suunto Eon Steel");
+        assert_eq!(Family::HwOstc.to_string(), "HW OSTC");
+        assert_eq!(Family::ShearwaterPredator.to_string(), "Shearwater Predator");
+    }
+
+    #[test]
+    fn display_round_trip_for_from_str() {
+        // Display output should round-trip through From<&str>
+        let families = [
+            Family::SuuntoSolution,
+            Family::ShearwaterPetrel,
+            Family::HwOstc3,
+            Family::CressiLeonardo,
+        ];
+        for f in families {
+            let displayed = f.to_string();
+            assert_eq!(Family::from(displayed.as_str()), f);
+        }
+    }
+}

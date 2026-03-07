@@ -76,3 +76,76 @@ impl TryFrom<i32> for Status {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn try_from_i32_all_known_codes() {
+        let cases: &[(i32, Status)] = &[
+            (0, Status::Success),
+            (1, Status::Done),
+            (-1, Status::Unsupported),
+            (-2, Status::InvalidArgs),
+            (-3, Status::NoMemory),
+            (-4, Status::NoDevice),
+            (-5, Status::NoAccess),
+            (-6, Status::Io),
+            (-7, Status::Timeout),
+            (-8, Status::Protocol),
+            (-9, Status::DataFormat),
+            (-10, Status::Cancelled),
+        ];
+        for &(code, expected) in cases {
+            assert_eq!(Status::try_from(code).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn try_from_i32_unknown_returns_err() {
+        assert!(Status::try_from(42i32).is_err());
+        assert!(Status::try_from(-100i32).is_err());
+    }
+
+    #[test]
+    fn try_from_u32_delegates() {
+        assert_eq!(Status::try_from(0u32).unwrap(), Status::Success);
+        assert_eq!(Status::try_from(1u32).unwrap(), Status::Done);
+    }
+
+    #[test]
+    fn check_success() {
+        assert!(Status::check(ffi::DC_STATUS_SUCCESS, "test").is_ok());
+    }
+
+    #[test]
+    fn check_error() {
+        let err = Status::check(ffi::DC_STATUS_IO, "test io").unwrap_err();
+        match err {
+            LibError::Status(Status::Io, Some(ctx)) => assert_eq!(ctx, "test io"),
+            _ => panic!("Expected Status(Io, Some), got {err:?}"),
+        }
+    }
+
+    #[test]
+    fn check_unsupported_success() {
+        assert_eq!(
+            Status::check_unsupported(ffi::DC_STATUS_SUCCESS, "test").unwrap(),
+            true
+        );
+    }
+
+    #[test]
+    fn check_unsupported_unsupported() {
+        assert_eq!(
+            Status::check_unsupported(ffi::DC_STATUS_UNSUPPORTED, "test").unwrap(),
+            false
+        );
+    }
+
+    #[test]
+    fn check_unsupported_error() {
+        assert!(Status::check_unsupported(ffi::DC_STATUS_IO, "test").is_err());
+    }
+}

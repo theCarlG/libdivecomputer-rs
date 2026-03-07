@@ -253,3 +253,50 @@ pub fn mac_string_to_u64(mac: &str) -> Option<u64> {
     }
     Some(address)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_bluetooth_address_known() {
+        let addr: u64 = 0xAABBCCDDEEFF;
+        assert_eq!(format_bluetooth_address(addr), "AA:BB:CC:DD:EE:FF");
+    }
+
+    #[test]
+    fn format_bluetooth_address_zero() {
+        assert_eq!(format_bluetooth_address(0), "00:00:00:00:00:00");
+    }
+
+    #[test]
+    fn mac_string_to_u64_valid() {
+        let addr = mac_string_to_u64("AA:BB:CC:DD:EE:FF").unwrap();
+        assert_eq!(addr, 0xAABBCCDDEEFF);
+    }
+
+    #[test]
+    fn mac_string_to_u64_lowercase() {
+        let addr = mac_string_to_u64("aa:bb:cc:dd:ee:ff").unwrap();
+        assert_eq!(addr, 0xAABBCCDDEEFF);
+    }
+
+    #[test]
+    fn mac_string_to_u64_wrong_octets() {
+        assert!(mac_string_to_u64("AA:BB:CC").is_none());
+        assert!(mac_string_to_u64("AA:BB:CC:DD:EE:FF:00").is_none());
+    }
+
+    #[test]
+    fn mac_string_to_u64_invalid_hex() {
+        assert!(mac_string_to_u64("GG:HH:II:JJ:KK:LL").is_none());
+    }
+
+    #[test]
+    fn mac_round_trip() {
+        let mac = "AA:BB:CC:DD:EE:FF";
+        let addr = mac_string_to_u64(mac).unwrap();
+        let recovered = format_bluetooth_address(addr);
+        assert_eq!(recovered, mac);
+    }
+}

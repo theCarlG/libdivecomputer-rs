@@ -23,7 +23,7 @@ fn main() -> Result<()> {
         vec![transport]
     } else if let Some(ref device_name) = args.device {
         // Find the descriptor and use its supported transports.
-        if let Some(desc) = Descriptor::find_by_name(&ctx, device_name)? {
+        if let Ok(desc) = Descriptor::find_by_name(device_name) {
             desc.transport_list()
         } else {
             eprintln!("Device '{}' not found in descriptor database", device_name);

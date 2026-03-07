@@ -50,8 +50,7 @@ fn main() -> Result<()> {
 
     let ctx = Context::builder().log_level(LogLevel::Warning).build()?;
 
-    let desc = Descriptor::find_by_name(&ctx, &args.device)?
-        .ok_or_else(|| libdivecomputer::LibError::DescriptorNotFound(args.device.clone()))?;
+    let desc = Descriptor::find_by_name(&args.device)?;
 
     // Scan for devices.
     println!("Scanning {} devices...", args.transport);
@@ -73,21 +72,31 @@ fn main() -> Result<()> {
         .transpose()
         .map_err(|e| libdivecomputer::LibError::ParseError(e.to_string()))?;
 
-    let dives = dev.download_dives(&mut DownloadOptions {
+    let mut on_event = |event: DeviceEvent| match event {
+        DeviceEvent::Progress { current, maximum } => {
+            println!(
+                "Progress: {:.1}%",
+                100.0 * (current as f64) / (maximum as f64)
+            );
+        }
+        DeviceEvent::DevInfo { model, serial, .. } => {
+            println!("Device: model={model}, serial={serial}");
+        }
+        _ => {}
+    };
+
+    let result = dev.download_dives(DownloadOptions {
         fingerprint: fp_bytes.as_deref(),
-        on_event: Some(Box::new(|event| match event {
-            DeviceEvent::Progress { current, maximum } => {
-                println!(
-                    "Progress: {:.1}%",
-                    100.0 * (current as f64) / (maximum as f64)
-                );
-            }
-            DeviceEvent::DevInfo { model, serial, .. } => {
-                println!("Device: model={model}, serial={serial}");
-            }
-            _ => {}
-        })),
-    })?;
+        on_event: Some(&mut on_event),
+    });
+
+    if result.has_errors() {
+        for e in &result.errors {
+            eprintln!("Parse error: {e}");
+        }
+    }
+
+    let dives = result.into_result()?;
 
     for dive in &dives {
         println!(

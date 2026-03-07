@@ -309,7 +309,7 @@ fn parse_fields(parser: *mut ffi::dc_parser_t) -> Result<Dive> {
         }
 
         // String fields (metadata)
-        for idx in 0..100u32 {
+        for idx in 0u32.. {
             let mut field = std::mem::MaybeUninit::<ffi::dc_field_string_t>::zeroed().assume_init();
             let status = ffi::dc_parser_get_field(
                 parser,

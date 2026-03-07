@@ -65,6 +65,9 @@ pub struct IoStream {
     pub(crate) ptr: *mut ffi::dc_iostream_t,
 }
 
+// SAFETY: dc_iostream_t operations go through FFI where the C library
+// manages the underlying I/O resource. The iostream is owned exclusively
+// by the wrapping Device.
 unsafe impl Send for IoStream {}
 unsafe impl Sync for IoStream {}
 
@@ -259,6 +262,22 @@ impl IoStream {
         let status = unsafe { ffi::dc_iostream_get_available(self.ptr, &mut value) };
         Status::check(status, "failed to get available bytes")?;
         Ok(value)
+    }
+}
+
+impl std::io::Read for IoStream {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        IoStream::read(self, buf).map_err(std::io::Error::other)
+    }
+}
+
+impl std::io::Write for IoStream {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        IoStream::write(self, buf).map_err(std::io::Error::other)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        IoStream::flush(self).map_err(std::io::Error::other)
     }
 }
 

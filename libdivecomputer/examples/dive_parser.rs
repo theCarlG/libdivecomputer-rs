@@ -63,10 +63,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ctx = Context::builder().log_level(LogLevel::Warning).build()?;
 
     let desc = if let Some(ref device_name) = args.device {
-        Descriptor::find_by_name(&ctx, device_name)?
-            .ok_or_else(|| format!("Device '{}' not found", device_name))?
+        Descriptor::find_by_name(device_name)
+            .map_err(|e| format!("{e}"))?
     } else if let Some(family) = args.family {
-        Descriptor::iter(&ctx)?
+        Descriptor::iter()
+            .map_err(|e| format!("{e}"))?
             .find(|d| d.family() == family)
             .ok_or_else(|| format!("Device family '{family}' not found"))?
     } else {

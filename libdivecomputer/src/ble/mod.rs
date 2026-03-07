@@ -28,6 +28,10 @@ type PendingReads = Vec<(usize, oneshot::Sender<std::result::Result<Vec<u8>, Str
 
 /// Scan for BLE dive computer devices.
 pub fn scan_ble(timeout: Duration) -> Result<Vec<DeviceInfo>> {
+    #[cfg(target_os = "android")]
+    let _jni_guard = android::attach_current_thread()
+        .map_err(|e| LibError::DeviceError(format!("JNI attach failed: {e}")))?;
+
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -231,6 +235,10 @@ impl BleTransport {
 
         // Spawn the event loop on a dedicated thread with its own runtime.
         std::thread::spawn(move || {
+            #[cfg(target_os = "android")]
+            let _jni_guard = android::attach_current_thread()
+                .expect("Failed to attach JNI to BLE event loop thread");
+
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -642,6 +650,10 @@ extern "C" fn ble_ioctl(
 
 /// Open a BLE iostream for the given MAC address.
 pub fn ble_iostream_open(ctx: &crate::context::Context, mac_address: &str) -> Result<IoStream> {
+    #[cfg(target_os = "android")]
+    let _jni_guard = android::attach_current_thread()
+        .map_err(|e| LibError::DeviceError(format!("JNI attach failed: {e}")))?;
+
     // Create a temporary runtime for the async connection.
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -705,8 +717,20 @@ pub mod android {
     }
 
     pub fn init(env: jni::JNIEnv) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let vm = env.get_java_vm()?;
+        let _ = JAVAVM.set(vm);
         jni_utils::init(&env)?;
         btleplug::platform::init(&env)?;
         Ok(())
+    }
+
+    /// Attach the current thread to the JVM and return a guard that detaches on drop.
+    /// Must be called on any spawned thread before using btleplug APIs.
+    pub fn attach_current_thread(
+    ) -> std::result::Result<jni::AttachGuard<'static>, Box<dyn std::error::Error>> {
+        let vm = JAVAVM
+            .get()
+            .ok_or("JavaVM not initialized — call init() first")?;
+        Ok(vm.attach_current_thread()?)
     }
 }

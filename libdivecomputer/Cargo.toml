@@ -18,6 +18,7 @@ default = ["ble"]
 ble = ["dep:btleplug", "dep:futures", "dep:tokio", "dep:tokio-stream", "dep:uuid"]
 
 [dependencies]
+bitflags            = { version = "2.9", features = ["serde"] }
 jiff                = { version = "0.2.15", features = ["js", "serde"] }
 libdivecomputer-sys = { version = "0.2.0", path = "../libdivecomputer-sys" }
 serde               = { version = "1.0.219", features = ["derive"] }

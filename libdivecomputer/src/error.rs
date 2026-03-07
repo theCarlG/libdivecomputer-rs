@@ -1,5 +1,3 @@
-use std::fmt;
-
 use crate::status::Status;
 
 /// The main error type for this crate.
@@ -83,17 +81,21 @@ impl LibError {
     pub fn status<T>(rc: T) -> Self
     where
         T: TryInto<Status>,
-        <T as TryInto<Status>>::Error: fmt::Debug,
     {
-        Self::Status(rc.try_into().unwrap(), None)
+        match rc.try_into() {
+            Ok(status) => Self::Status(status, None),
+            Err(_) => Self::Unknown,
+        }
     }
 
     pub fn status_with_context<T>(rc: T, context: impl ToString) -> Self
     where
         T: TryInto<Status>,
-        <T as TryInto<Status>>::Error: fmt::Debug,
     {
-        Self::Status(rc.try_into().unwrap(), Some(context.to_string()))
+        match rc.try_into() {
+            Ok(status) => Self::Status(status, Some(context.to_string())),
+            Err(_) => Self::Unknown,
+        }
     }
 }
 
@@ -139,5 +141,45 @@ mod tests {
     fn test_error_display() {
         let error = LibError::DeviceError("Test device error".to_string());
         assert_eq!(error.to_string(), "device error: Test device error");
+    }
+
+    #[test]
+    fn status_with_valid_code() {
+        let error = LibError::status(libdivecomputer_sys::DC_STATUS_IO);
+        match error {
+            LibError::Status(Status::Io, None) => {}
+            _ => panic!("Expected Status(Io, None), got {error:?}"),
+        }
+    }
+
+    #[test]
+    fn status_with_unknown_code_returns_unknown() {
+        let error = LibError::status(999i32);
+        assert!(matches!(error, LibError::Unknown));
+    }
+
+    #[test]
+    fn status_with_context_preserves_context() {
+        let error =
+            LibError::status_with_context(libdivecomputer_sys::DC_STATUS_TIMEOUT, "test context");
+        match error {
+            LibError::Status(Status::Timeout, Some(ctx)) => {
+                assert_eq!(ctx, "test context");
+            }
+            _ => panic!("Expected Status(Timeout, Some), got {error:?}"),
+        }
+    }
+
+    #[test]
+    fn status_with_context_unknown_code() {
+        let error = LibError::status_with_context(999i32, "ignored");
+        assert!(matches!(error, LibError::Unknown));
+    }
+
+    #[test]
+    fn from_nul_error() {
+        let nul_err = std::ffi::CString::new("hello\0world").unwrap_err();
+        let error = LibError::from(nul_err);
+        assert!(matches!(error, LibError::InvalidArguments(_)));
     }
 }

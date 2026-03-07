@@ -21,7 +21,7 @@ pub mod ble;
 pub use common::{EventKind, SampleFlag, SampleKind};
 pub use context::{Context, ContextBuilder, LogLevel};
 pub use descriptor::{Descriptor, DescriptorIter};
-pub use device::{ConnectionInfo, Device, DeviceEvent, DeviceInfo, DownloadOptions};
+pub use device::{ConnectionInfo, Device, DeviceEvent, DeviceInfo, DownloadOptions, DownloadResult};
 pub use error::{LibError, Result};
 pub use family::Family;
 pub use iostream::IoStream;

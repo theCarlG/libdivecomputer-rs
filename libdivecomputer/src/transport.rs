@@ -1,6 +1,8 @@
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
+
+use crate::error::LibError;
 
 /// Transport types supported by libdivecomputer.
 #[repr(u32)]
@@ -31,24 +33,22 @@ impl fmt::Display for Transport {
     }
 }
 
-impl From<&str> for Transport {
-    fn from(s: &str) -> Self {
-        match s {
-            "Serial" => Self::Serial,
-            "USB" => Self::Usb,
-            "USB HID" => Self::UsbHid,
-            "IrDA" => Self::Irda,
-            "Bluetooth" => Self::Bluetooth,
-            "BLE" => Self::Ble,
-            "USB Storage" => Self::UsbStorage,
-            _ => Self::Serial, // fallback
-        }
-    }
-}
+impl FromStr for Transport {
+    type Err = LibError;
 
-impl From<&String> for Transport {
-    fn from(value: &String) -> Self {
-        Self::from(value.as_str())
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "Serial" | "serial" => Ok(Self::Serial),
+            "USB" | "usb" => Ok(Self::Usb),
+            "USB HID" | "usb-hid" | "usb_hid" => Ok(Self::UsbHid),
+            "IrDA" | "irda" => Ok(Self::Irda),
+            "Bluetooth" | "bluetooth" => Ok(Self::Bluetooth),
+            "BLE" | "ble" => Ok(Self::Ble),
+            "USB Storage" | "usb-storage" | "usb_storage" => Ok(Self::UsbStorage),
+            _ => Err(LibError::InvalidArguments(format!(
+                "unknown transport: '{s}'"
+            ))),
+        }
     }
 }
 
@@ -117,5 +117,118 @@ impl fmt::Display for TransportSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let names: Vec<String> = self.to_vec().iter().map(|t| t.to_string()).collect();
         write!(f, "{}", names.join(", "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_str_valid_variants() {
+        assert_eq!("Serial".parse::<Transport>().unwrap(), Transport::Serial);
+        assert_eq!("serial".parse::<Transport>().unwrap(), Transport::Serial);
+        assert_eq!("BLE".parse::<Transport>().unwrap(), Transport::Ble);
+        assert_eq!("ble".parse::<Transport>().unwrap(), Transport::Ble);
+        assert_eq!("USB HID".parse::<Transport>().unwrap(), Transport::UsbHid);
+        assert_eq!("usb-hid".parse::<Transport>().unwrap(), Transport::UsbHid);
+        assert_eq!("usb_hid".parse::<Transport>().unwrap(), Transport::UsbHid);
+        assert_eq!("USB".parse::<Transport>().unwrap(), Transport::Usb);
+        assert_eq!("usb".parse::<Transport>().unwrap(), Transport::Usb);
+        assert_eq!("IrDA".parse::<Transport>().unwrap(), Transport::Irda);
+        assert_eq!("irda".parse::<Transport>().unwrap(), Transport::Irda);
+        assert_eq!(
+            "Bluetooth".parse::<Transport>().unwrap(),
+            Transport::Bluetooth
+        );
+        assert_eq!(
+            "bluetooth".parse::<Transport>().unwrap(),
+            Transport::Bluetooth
+        );
+        assert_eq!(
+            "USB Storage".parse::<Transport>().unwrap(),
+            Transport::UsbStorage
+        );
+        assert_eq!(
+            "usb-storage".parse::<Transport>().unwrap(),
+            Transport::UsbStorage
+        );
+        assert_eq!(
+            "usb_storage".parse::<Transport>().unwrap(),
+            Transport::UsbStorage
+        );
+    }
+
+    #[test]
+    fn from_str_invalid() {
+        let err = "nonsense".parse::<Transport>().unwrap_err();
+        assert!(matches!(err, LibError::InvalidArguments(_)));
+    }
+
+    #[test]
+    fn display_round_trip() {
+        let all = [
+            Transport::Serial,
+            Transport::Usb,
+            Transport::UsbHid,
+            Transport::Irda,
+            Transport::Bluetooth,
+            Transport::Ble,
+            Transport::UsbStorage,
+        ];
+        for t in all {
+            let s = t.to_string();
+            let parsed: Transport = s.parse().unwrap();
+            assert_eq!(parsed, t);
+        }
+    }
+
+    #[test]
+    fn transport_set_contains_and_to_vec() {
+        let set = TransportSet::from_bits(Transport::Serial as u32 | Transport::Ble as u32);
+        assert!(set.contains(Transport::Serial));
+        assert!(set.contains(Transport::Ble));
+        assert!(!set.contains(Transport::Usb));
+        assert!(!set.contains(Transport::Bluetooth));
+
+        let vec = set.to_vec();
+        assert_eq!(vec, vec![Transport::Serial, Transport::Ble]);
+    }
+
+    #[test]
+    fn transport_set_empty() {
+        let set = TransportSet::from_bits(0);
+        assert!(set.to_vec().is_empty());
+        assert!(!set.contains(Transport::Serial));
+    }
+
+    #[test]
+    fn transport_set_into_iterator() {
+        let set = TransportSet::from_bits(Transport::Usb as u32 | Transport::Irda as u32);
+        let collected: Vec<Transport> = set.into_iter().collect();
+        assert_eq!(collected, vec![Transport::Usb, Transport::Irda]);
+    }
+
+    #[test]
+    fn transport_set_ref_into_iterator() {
+        let set = TransportSet::from_bits(Transport::Serial as u32);
+        let collected: Vec<Transport> = (&set).into_iter().collect();
+        assert_eq!(collected, vec![Transport::Serial]);
+    }
+
+    #[test]
+    fn transport_set_display() {
+        let set = TransportSet::from_bits(Transport::Serial as u32 | Transport::Ble as u32);
+        assert_eq!(set.to_string(), "Serial, BLE");
+
+        let empty = TransportSet::from_bits(0);
+        assert_eq!(empty.to_string(), "");
+    }
+
+    #[test]
+    fn transport_set_from_u32() {
+        let set: TransportSet = (Transport::Usb as u32).into();
+        assert!(set.contains(Transport::Usb));
+        assert_eq!(set.bits(), Transport::Usb as u32);
     }
 }

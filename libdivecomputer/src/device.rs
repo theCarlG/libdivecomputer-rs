@@ -146,10 +146,10 @@ pub enum DeviceEvent {
 }
 
 /// Callback data passed to the FFI during foreach.
-struct ForeachData<'a> {
-    dive_cb: &'a mut dyn FnMut(&[u8], &[u8]) -> bool,
-    event_cb: Option<&'a mut dyn FnMut(DeviceEvent)>,
-    cancel_cb: Option<&'a dyn Fn() -> bool>,
+struct ForeachData<'d, 'e, 'c> {
+    dive_cb: &'d mut dyn FnMut(&[u8], &[u8]) -> bool,
+    event_cb: Option<&'e mut dyn FnMut(DeviceEvent)>,
+    cancel_cb: Option<&'c dyn Fn() -> bool>,
 }
 
 /// Connected dive computer device. Wraps `dc_device_t`.
@@ -158,6 +158,9 @@ pub struct Device {
     _iostream: IoStream,
 }
 
+// SAFETY: dc_device_t operations are serialized through the C library.
+// The device is accessed through &self methods that go through FFI, where
+// the C library handles any necessary synchronization.
 unsafe impl Send for Device {}
 unsafe impl Sync for Device {}
 
@@ -187,97 +190,29 @@ impl Device {
 
     /// Set the fingerprint from a hex string.
     pub fn set_fingerprint_hex(&self, hex: &str) -> Result<()> {
-        let bytes = hex_string_to_bytes(hex)?;
-        self.set_fingerprint(&bytes)
+        let fp = crate::parser::Fingerprint::from_hex(hex)?;
+        self.set_fingerprint(fp.as_bytes())
     }
 
     /// Download all dives, calling `dive_cb` for each.
+    ///
     /// The callback receives `(data, fingerprint)` and returns `true` to continue.
-    pub fn foreach<F>(&self, mut dive_cb: F) -> Result<()>
-    where
-        F: FnMut(&[u8], &[u8]) -> bool,
-    {
-        let mut data = ForeachData {
-            dive_cb: &mut dive_cb,
-            event_cb: None,
-            cancel_cb: None,
-        };
-
-        unsafe {
-            let events = ffi::DC_EVENT_WAITING
-                | ffi::DC_EVENT_PROGRESS
-                | ffi::DC_EVENT_DEVINFO
-                | ffi::DC_EVENT_CLOCK
-                | ffi::DC_EVENT_VENDOR;
-
-            let status = ffi::dc_device_set_events(
-                self.ptr,
-                events,
-                Some(event_callback),
-                as_void_ptr(&mut data),
-            );
-            Status::check(status, "failed to set event handler")?;
-
-            let status =
-                ffi::dc_device_foreach(self.ptr, Some(dive_callback), as_void_ptr(&mut data));
-            Status::check(status, "failed to download dives")?;
-        }
-
-        Ok(())
-    }
-
-    /// Download all dives with both dive and event callbacks.
-    pub fn foreach_with_events<D, E>(&self, mut dive_cb: D, mut event_cb: E) -> Result<()>
-    where
-        D: FnMut(&[u8], &[u8]) -> bool,
-        E: FnMut(DeviceEvent),
-    {
-        let mut data = ForeachData {
-            dive_cb: &mut dive_cb,
-            event_cb: Some(&mut event_cb),
-            cancel_cb: None,
-        };
-
-        unsafe {
-            let events = ffi::DC_EVENT_WAITING
-                | ffi::DC_EVENT_PROGRESS
-                | ffi::DC_EVENT_DEVINFO
-                | ffi::DC_EVENT_CLOCK
-                | ffi::DC_EVENT_VENDOR;
-
-            let status = ffi::dc_device_set_events(
-                self.ptr,
-                events,
-                Some(event_callback),
-                as_void_ptr(&mut data),
-            );
-            Status::check(status, "failed to set event handler")?;
-
-            let status =
-                ffi::dc_device_foreach(self.ptr, Some(dive_callback), as_void_ptr(&mut data));
-            Status::check(status, "failed to download dives")?;
-        }
-
-        Ok(())
-    }
-
-    /// Set a cancel callback that is polled during downloads.
-    pub fn foreach_with_cancel<D, E, C>(
+    /// Optionally provide an event callback and/or a cancel callback.
+    pub fn foreach(
         &self,
-        mut dive_cb: D,
-        mut event_cb: E,
-        cancel_cb: C,
-    ) -> Result<()>
-    where
-        D: FnMut(&[u8], &[u8]) -> bool,
-        E: FnMut(DeviceEvent),
-        C: Fn() -> bool,
-    {
-        let mut data = ForeachData {
-            dive_cb: &mut dive_cb,
-            event_cb: Some(&mut event_cb),
-            cancel_cb: Some(&cancel_cb),
-        };
+        dive_cb: &mut dyn FnMut(&[u8], &[u8]) -> bool,
+        event_cb: Option<&mut dyn FnMut(DeviceEvent)>,
+        cancel_cb: Option<&dyn Fn() -> bool>,
+    ) -> Result<()> {
+        self.foreach_internal(ForeachData {
+            dive_cb,
+            event_cb,
+            cancel_cb,
+        })
+    }
+
+    fn foreach_internal(&self, mut data: ForeachData<'_, '_, '_>) -> Result<()> {
+        let has_cancel = data.cancel_cb.is_some();
 
         unsafe {
             let events = ffi::DC_EVENT_WAITING
@@ -294,9 +229,14 @@ impl Device {
             );
             Status::check(status, "failed to set event handler")?;
 
-            let status =
-                ffi::dc_device_set_cancel(self.ptr, Some(cancel_callback), as_void_ptr(&mut data));
-            Status::check(status, "failed to set cancel callback")?;
+            if has_cancel {
+                let status = ffi::dc_device_set_cancel(
+                    self.ptr,
+                    Some(cancel_callback),
+                    as_void_ptr(&mut data),
+                );
+                Status::check(status, "failed to set cancel callback")?;
+            }
 
             let status =
                 ffi::dc_device_foreach(self.ptr, Some(dive_callback), as_void_ptr(&mut data));
@@ -344,45 +284,43 @@ impl Device {
     /// Download and parse all dives from the device.
     ///
     /// This is a convenience method that handles the foreach/parse cycle.
-    /// For streaming or custom control flow, use the lower-level `foreach` methods.
-    pub fn download_dives(&self, options: &mut DownloadOptions<'_>) -> Result<Vec<Dive>> {
-        if let Some(fp) = options.fingerprint {
-            self.set_fingerprint(fp)?;
+    /// For streaming or custom control flow, use the lower-level `foreach` method.
+    ///
+    /// Returns successfully parsed dives and any parse errors that occurred.
+    pub fn download_dives(&self, options: DownloadOptions<'_>) -> DownloadResult {
+        if let Some(fp) = options.fingerprint
+            && let Err(e) = self.set_fingerprint(fp)
+        {
+            return DownloadResult {
+                dives: Vec::new(),
+                errors: vec![e],
+            };
         }
 
         let mut dives = Vec::new();
-        let mut first_error: Option<LibError> = None;
+        let mut errors: Vec<LibError> = Vec::new();
 
         {
             let mut dive_cb = |data: &[u8], fingerprint: &[u8]| -> bool {
-                match Parser::from_device(self, data).and_then(|parser| parser.parse(fingerprint)) {
+                match Parser::from_device(self, data)
+                    .and_then(|parser| parser.parse(fingerprint))
+                {
                     Ok(dive) => dives.push(dive),
-                    Err(e) => {
-                        if first_error.is_none() {
-                            first_error = Some(e);
-                        }
-                    }
+                    Err(e) => errors.push(e),
                 }
                 true
             };
 
-            match options.on_event.as_mut() {
-                Some(event_cb) => {
-                    self.foreach_with_events(&mut dive_cb, event_cb)?;
-                }
-                None => {
-                    self.foreach(&mut dive_cb)?;
-                }
+            if let Err(e) = self.foreach_internal(ForeachData {
+                dive_cb: &mut dive_cb,
+                event_cb: options.on_event,
+                cancel_cb: None,
+            }) {
+                errors.push(e);
             }
         }
 
-        if dives.is_empty()
-            && let Some(e) = first_error
-        {
-            return Err(e);
-        }
-
-        Ok(dives)
+        DownloadResult { dives, errors }
     }
 
     /// Get the raw device pointer (for vendor-specific APIs).
@@ -397,7 +335,41 @@ pub struct DownloadOptions<'a> {
     /// Fingerprint for incremental downloads. Only dives newer than this will be downloaded.
     pub fingerprint: Option<&'a [u8]>,
     /// Optional callback for device events (progress, device info, etc.).
-    pub on_event: Option<Box<dyn FnMut(DeviceEvent) + 'a>>,
+    pub on_event: Option<&'a mut dyn FnMut(DeviceEvent)>,
+}
+
+
+/// Result of a dive download operation.
+///
+/// Contains both successfully parsed dives and any errors encountered during parsing.
+/// This allows partial success: some dives may parse correctly while others fail.
+pub struct DownloadResult {
+    /// Successfully parsed dives.
+    pub dives: Vec<Dive>,
+    /// Errors encountered during download or parsing.
+    pub errors: Vec<LibError>,
+}
+
+impl DownloadResult {
+    /// Returns `true` if all dives were parsed successfully (no errors).
+    pub fn is_ok(&self) -> bool {
+        self.errors.is_empty()
+    }
+
+    /// Returns `true` if any errors occurred during parsing.
+    pub fn has_errors(&self) -> bool {
+        !self.errors.is_empty()
+    }
+
+    /// Consume this result, returning the dives or the first error if no dives were parsed.
+    pub fn into_result(self) -> Result<Vec<Dive>> {
+        if self.dives.is_empty()
+            && let Some(e) = self.errors.into_iter().next()
+        {
+            return Err(e);
+        }
+        Ok(self.dives)
+    }
 }
 
 impl std::fmt::Debug for Device {
@@ -495,14 +467,232 @@ extern "C" fn cancel_callback(userdata: *mut c_void) -> c_int {
 }
 
 /// Convert a hex string to bytes.
+///
+/// Prefer [`Fingerprint::from_hex`] for fingerprint-specific use cases.
 pub fn hex_string_to_bytes(hex: &str) -> std::result::Result<Vec<u8>, std::num::ParseIntError> {
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
-        .collect()
+    crate::parser::Fingerprint::from_hex(hex).map(|fp| fp.as_bytes().to_vec())
 }
 
 /// Convert bytes to a hex string.
+///
+/// Prefer [`Fingerprint::to_hex`] for fingerprint-specific use cases.
 pub fn bytes_to_hex(data: &[u8]) -> String {
     data.iter().map(|b| format!("{b:02X}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_string_to_bytes_valid() {
+        let bytes = hex_string_to_bytes("DEADBEEF").unwrap();
+        assert_eq!(bytes, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn hex_string_to_bytes_invalid() {
+        assert!(hex_string_to_bytes("ZZZZ").is_err());
+        assert!(hex_string_to_bytes("ABC").is_err()); // odd length
+    }
+
+    #[test]
+    fn bytes_to_hex_known() {
+        assert_eq!(bytes_to_hex(&[0xDE, 0xAD, 0xBE, 0xEF]), "DEADBEEF");
+        assert_eq!(bytes_to_hex(&[0x00, 0xFF]), "00FF");
+    }
+
+    #[test]
+    fn hex_round_trip() {
+        let original = vec![0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF];
+        let hex = bytes_to_hex(&original);
+        let recovered = hex_string_to_bytes(&hex).unwrap();
+        assert_eq!(recovered, original);
+    }
+
+    #[test]
+    fn connection_info_connection_string_serial() {
+        let ci = ConnectionInfo::Serial {
+            name: "ttyUSB0".into(),
+            path: "/dev/ttyUSB0".into(),
+        };
+        assert_eq!(ci.connection_string().unwrap().as_ref(), "/dev/ttyUSB0");
+    }
+
+    #[test]
+    fn connection_info_connection_string_usb_returns_none() {
+        let ci = ConnectionInfo::Usb {
+            vendor_id: 0x1234,
+            product_id: 0x5678,
+        };
+        assert!(ci.connection_string().is_none());
+    }
+
+    #[test]
+    fn connection_info_connection_string_ble() {
+        let ci = ConnectionInfo::Ble {
+            address: 0,
+            local_name: Some("MyDevice".into()),
+            service_name: "svc".into(),
+            address_string: "AA:BB:CC:DD:EE:FF".into(),
+        };
+        assert_eq!(
+            ci.connection_string().unwrap().as_ref(),
+            "AA:BB:CC:DD:EE:FF"
+        );
+    }
+
+    #[test]
+    fn connection_info_display_name_serial() {
+        let ci = ConnectionInfo::Serial {
+            name: "ttyUSB0".into(),
+            path: "/dev/ttyUSB0".into(),
+        };
+        assert_eq!(ci.display_name().as_ref(), "ttyUSB0");
+    }
+
+    #[test]
+    fn connection_info_display_name_usb() {
+        let ci = ConnectionInfo::Usb {
+            vendor_id: 0x1234,
+            product_id: 0x5678,
+        };
+        assert_eq!(ci.display_name().as_ref(), "USB Device 1234:5678");
+    }
+
+    #[test]
+    fn connection_info_display_name_ble_with_name() {
+        let ci = ConnectionInfo::Ble {
+            address: 0,
+            local_name: Some("MyDevice".into()),
+            service_name: "svc".into(),
+            address_string: "".into(),
+        };
+        assert_eq!(ci.display_name().as_ref(), "MyDevice - svc");
+    }
+
+    #[test]
+    fn connection_info_display_name_ble_without_name() {
+        let ci = ConnectionInfo::Ble {
+            address: 0,
+            local_name: None,
+            service_name: "svc".into(),
+            address_string: "".into(),
+        };
+        assert_eq!(ci.display_name().as_ref(), "svc");
+    }
+
+    #[test]
+    fn transport_from_connection_info() {
+        let cases: Vec<(ConnectionInfo, Transport)> = vec![
+            (
+                ConnectionInfo::Serial {
+                    name: "".into(),
+                    path: "".into(),
+                },
+                Transport::Serial,
+            ),
+            (
+                ConnectionInfo::Usb {
+                    vendor_id: 0,
+                    product_id: 0,
+                },
+                Transport::Usb,
+            ),
+            (
+                ConnectionInfo::UsbHid {
+                    vendor_id: 0,
+                    product_id: 0,
+                },
+                Transport::UsbHid,
+            ),
+            (
+                ConnectionInfo::Bluetooth {
+                    address: 0,
+                    name: "".into(),
+                    address_string: "".into(),
+                },
+                Transport::Bluetooth,
+            ),
+            (
+                ConnectionInfo::Ble {
+                    address: 0,
+                    local_name: None,
+                    service_name: "".into(),
+                    address_string: "".into(),
+                },
+                Transport::Ble,
+            ),
+            (
+                ConnectionInfo::Irda {
+                    address: 0,
+                    name: "".into(),
+                },
+                Transport::Irda,
+            ),
+            (
+                ConnectionInfo::UsbStorage {
+                    name: "".into(),
+                    path: "".into(),
+                },
+                Transport::UsbStorage,
+            ),
+        ];
+        for (ci, expected) in &cases {
+            assert_eq!(Transport::from(ci), *expected);
+        }
+    }
+
+    #[test]
+    fn download_result_is_ok_and_has_errors() {
+        let ok_result = DownloadResult {
+            dives: vec![],
+            errors: vec![],
+        };
+        assert!(ok_result.is_ok());
+        assert!(!ok_result.has_errors());
+
+        let err_result = DownloadResult {
+            dives: vec![],
+            errors: vec![LibError::Unknown],
+        };
+        assert!(!err_result.is_ok());
+        assert!(err_result.has_errors());
+    }
+
+    #[test]
+    fn download_result_into_result_empty_with_errors() {
+        let result = DownloadResult {
+            dives: vec![],
+            errors: vec![LibError::Unknown],
+        };
+        assert!(result.into_result().is_err());
+    }
+
+    #[test]
+    fn download_result_into_result_has_dives_ignores_errors() {
+        let result = DownloadResult {
+            dives: vec![Dive::default()],
+            errors: vec![LibError::Unknown],
+        };
+        let dives = result.into_result().unwrap();
+        assert_eq!(dives.len(), 1);
+    }
+
+    #[test]
+    fn download_result_into_result_empty_no_errors() {
+        let result = DownloadResult {
+            dives: vec![],
+            errors: vec![],
+        };
+        let dives = result.into_result().unwrap();
+        assert!(dives.is_empty());
+    }
+
+    #[test]
+    fn download_options_default() {
+        let opts = DownloadOptions::default();
+        assert!(opts.fingerprint.is_none());
+        assert!(opts.on_event.is_none());
+    }
 }

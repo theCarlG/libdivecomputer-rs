@@ -53,6 +53,8 @@ impl Context {
     where
         F: Fn(LogLevel, &str) + 'static,
     {
+        // Double-box: Box<dyn Fn> is a fat pointer, but we need a thin *mut c_void
+        // for the C callback. Box<Box<dyn Fn>> gives us a thin pointer.
         let boxed: LogCallback = Box::new(callback);
         let raw = Box::into_raw(Box::new(boxed));
 
@@ -103,6 +105,8 @@ impl Drop for Context {
     }
 }
 
+// SAFETY: dc_context_t is only used to pass configuration to other FFI calls.
+// The context pointer is not mutated after creation except through &mut self methods.
 unsafe impl Send for Context {}
 unsafe impl Sync for Context {}
 
@@ -165,6 +169,47 @@ impl Display for LogLevel {
             Self::Debug => write!(f, "Debug"),
             Self::All => write!(f, "All"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn context_new_succeeds() {
+        let ctx = Context::new();
+        assert!(ctx.is_ok());
+    }
+
+    #[test]
+    fn context_builder_build_succeeds() {
+        let ctx = Context::builder().build();
+        assert!(ctx.is_ok());
+    }
+
+    #[test]
+    fn context_builder_with_log_level() {
+        let ctx = Context::builder().log_level(LogLevel::Debug).build();
+        assert!(ctx.is_ok());
+    }
+
+    #[test]
+    fn log_level_display() {
+        assert_eq!(LogLevel::Error.to_string(), "Error");
+        assert_eq!(LogLevel::Warning.to_string(), "Warning");
+        assert_eq!(LogLevel::Info.to_string(), "Info");
+        assert_eq!(LogLevel::Debug.to_string(), "Debug");
+        assert_eq!(LogLevel::All.to_string(), "All");
+        assert_eq!(LogLevel::None.to_string(), "");
+    }
+
+    #[test]
+    fn context_get_transports() {
+        let ctx = Context::new().unwrap();
+        let transports = ctx.get_transports();
+        // On a real system, at least serial should be available
+        let _ = transports.to_vec();
     }
 }
 

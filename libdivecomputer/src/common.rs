@@ -1,5 +1,6 @@
 use std::ffi::c_void;
 
+use bitflags::bitflags;
 use libdivecomputer_sys as ffi;
 use serde::{Deserialize, Serialize};
 use serde_repr::Deserialize_repr;
@@ -167,95 +168,159 @@ impl std::fmt::Display for EventKind {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize_repr)]
-#[repr(u32)]
-#[non_exhaustive]
-pub enum SampleFlag {
-    None = 0,
-    Begin = 1 << 0,
-    End = 1 << 1,
-    SeverityMask = 7 << 2,
-    SeverityState = 1 << 2,
-    SeverityInfo = 2 << 2,
-    SeverityWarn = 3 << 2,
-    SeverityAlarm = 4 << 2,
-    TypeMask = 7 << 5,
-    TypeInterest = 1 << 5,
-    TypeNavpoint = 2 << 5,
-    TypeDanger = 3 << 5,
-    TypeAnimal = 4 << 5,
-    TypeIssue = 5 << 5,
-    TypeInjury = 6 << 5,
-}
-
 const SEVERITY_SHIFT: u32 = 2;
 const TYPE_SHIFT: u32 = 5;
 
+bitflags! {
+    /// Sample event flags. These are bitmask values that can be combined.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(transparent)]
+    pub struct SampleFlag: u32 {
+        const BEGIN = 1 << 0;
+        const END = 1 << 1;
+        const SEVERITY_MASK = 7 << SEVERITY_SHIFT;
+        const SEVERITY_STATE = 1 << SEVERITY_SHIFT;
+        const SEVERITY_INFO = 2 << SEVERITY_SHIFT;
+        const SEVERITY_WARN = 3 << SEVERITY_SHIFT;
+        const SEVERITY_ALARM = 4 << SEVERITY_SHIFT;
+        const TYPE_MASK = 7 << TYPE_SHIFT;
+        const TYPE_INTEREST = 1 << TYPE_SHIFT;
+        const TYPE_NAVPOINT = 2 << TYPE_SHIFT;
+        const TYPE_DANGER = 3 << TYPE_SHIFT;
+        const TYPE_ANIMAL = 4 << TYPE_SHIFT;
+        const TYPE_ISSUE = 5 << TYPE_SHIFT;
+        const TYPE_INJURY = 6 << TYPE_SHIFT;
+    }
+}
+
+impl SampleFlag {
+    /// Extract the severity value from flags.
+    pub fn severity(self) -> u32 {
+        (self & Self::SEVERITY_MASK).bits() >> SEVERITY_SHIFT
+    }
+
+    /// Return flags with the severity field set.
+    pub fn with_severity(self, severity: u32) -> Self {
+        let cleared = self & !Self::SEVERITY_MASK;
+        cleared | Self::from_bits_truncate((severity & 0x7) << SEVERITY_SHIFT)
+    }
+
+    /// Extract the type value from flags.
+    pub fn event_type(self) -> u32 {
+        (self & Self::TYPE_MASK).bits() >> TYPE_SHIFT
+    }
+
+    /// Return flags with the type field set.
+    pub fn with_event_type(self, type_val: u32) -> Self {
+        let cleared = self & !Self::TYPE_MASK;
+        cleared | Self::from_bits_truncate((type_val & 0x7) << TYPE_SHIFT)
+    }
+}
+
 impl std::fmt::Display for SampleFlag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
-            Self::None => "",
-            Self::Begin => "Begin",
-            Self::End => "End",
-            Self::SeverityMask => "SeverityMask",
-            Self::SeverityState => "State",
-            Self::SeverityInfo => "Info",
-            Self::SeverityWarn => "Warn",
-            Self::SeverityAlarm => "Alarm",
-            Self::TypeMask => "TypeMask",
-            Self::TypeInterest => "Interest",
-            Self::TypeNavpoint => "Navpoint",
-            Self::TypeDanger => "Danger",
-            Self::TypeAnimal => "Animal",
-            Self::TypeIssue => "Issue",
-            Self::TypeInjury => "Injury",
-        };
-        write!(f, "{s}")
+        bitflags::parser::to_writer(self, f)
     }
 }
 
 impl From<u32> for SampleFlag {
     fn from(value: u32) -> Self {
-        match value {
-            1 => Self::Begin,
-            2 => Self::End,
-            v if v == (7 << SEVERITY_SHIFT) => Self::SeverityMask,
-            v if v == (1 << SEVERITY_SHIFT) => Self::SeverityState,
-            v if v == (2 << SEVERITY_SHIFT) => Self::SeverityInfo,
-            v if v == (3 << SEVERITY_SHIFT) => Self::SeverityWarn,
-            v if v == (4 << SEVERITY_SHIFT) => Self::SeverityAlarm,
-            v if v == (7 << TYPE_SHIFT) => Self::TypeMask,
-            v if v == (1 << TYPE_SHIFT) => Self::TypeInterest,
-            v if v == (2 << TYPE_SHIFT) => Self::TypeNavpoint,
-            v if v == (3 << TYPE_SHIFT) => Self::TypeDanger,
-            v if v == (4 << TYPE_SHIFT) => Self::TypeAnimal,
-            v if v == (5 << TYPE_SHIFT) => Self::TypeIssue,
-            v if v == (6 << TYPE_SHIFT) => Self::TypeInjury,
-            _ => Self::None,
-        }
+        Self::from_bits_truncate(value)
     }
 }
 
-impl SampleFlag {
-    pub fn as_u32(&self) -> u32 {
-        *self as u32
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sample_flag_combine() {
+        let flags = SampleFlag::BEGIN | SampleFlag::SEVERITY_WARN;
+        assert!(flags.contains(SampleFlag::BEGIN));
+        assert!(flags.contains(SampleFlag::SEVERITY_WARN));
+        assert!(!flags.contains(SampleFlag::END));
     }
 
-    pub fn get_severity(flags: u32) -> u32 {
-        (flags & (Self::SeverityMask as u32)) >> SEVERITY_SHIFT
+    #[test]
+    fn sample_flag_severity() {
+        let flags = SampleFlag::SEVERITY_WARN;
+        assert_eq!(flags.severity(), 3);
+
+        let flags = SampleFlag::SEVERITY_ALARM;
+        assert_eq!(flags.severity(), 4);
+
+        assert_eq!(SampleFlag::empty().severity(), 0);
     }
 
-    pub fn set_severity(flags: u32, severity: u32) -> u32 {
-        let cleared = flags & !(Self::SeverityMask as u32);
-        cleared | ((severity & 0x7) << SEVERITY_SHIFT)
+    #[test]
+    fn sample_flag_with_severity() {
+        let flags = SampleFlag::BEGIN | SampleFlag::SEVERITY_INFO;
+        let updated = flags.with_severity(4); // ALARM (0b100 << 2), no overlap with INFO (0b010 << 2)
+        assert!(updated.contains(SampleFlag::BEGIN));
+        assert_eq!(updated.severity(), 4);
+        // Severity field should be exactly ALARM now, not INFO
+        assert_eq!(
+            updated & SampleFlag::SEVERITY_MASK,
+            SampleFlag::SEVERITY_ALARM
+        );
     }
 
-    pub fn get_type(flags: u32) -> u32 {
-        (flags & (Self::TypeMask as u32)) >> TYPE_SHIFT
+    #[test]
+    fn sample_flag_event_type() {
+        let flags = SampleFlag::TYPE_DANGER;
+        assert_eq!(flags.event_type(), 3);
+
+        assert_eq!(SampleFlag::empty().event_type(), 0);
     }
 
-    pub fn set_type(flags: u32, type_val: u32) -> u32 {
-        let cleared = flags & !(Self::TypeMask as u32);
-        cleared | ((type_val & 0x7) << TYPE_SHIFT)
+    #[test]
+    fn sample_flag_with_event_type() {
+        let flags = SampleFlag::END | SampleFlag::TYPE_INTEREST;
+        let updated = flags.with_event_type(4); // ANIMAL
+        assert!(updated.contains(SampleFlag::END));
+        assert_eq!(updated.event_type(), 4);
+        assert!(!updated.contains(SampleFlag::TYPE_INTEREST));
+    }
+
+    #[test]
+    fn sample_flag_from_u32_truncates() {
+        let flags = SampleFlag::from(0xFFFF_FFFF);
+        // Should only retain known bits
+        assert!(flags.contains(SampleFlag::BEGIN));
+        assert!(flags.contains(SampleFlag::END));
+    }
+
+    #[test]
+    fn sample_flag_empty_is_zero() {
+        assert_eq!(SampleFlag::empty().bits(), 0);
+    }
+
+    #[test]
+    fn event_kind_from_known_values() {
+        assert_eq!(EventKind::from(ffi::SAMPLE_EVENT_DECOSTOP), EventKind::DecoStop);
+        assert_eq!(EventKind::from(ffi::SAMPLE_EVENT_ASCENT), EventKind::Ascent);
+        assert_eq!(EventKind::from(ffi::SAMPLE_EVENT_BOOKMARK), EventKind::Bookmark);
+        assert_eq!(EventKind::from(ffi::SAMPLE_EVENT_STRING), EventKind::String);
+    }
+
+    #[test]
+    fn event_kind_from_unknown_returns_none() {
+        assert_eq!(EventKind::from(9999), EventKind::None);
+    }
+
+    #[test]
+    fn sample_kind_display() {
+        assert_eq!(SampleKind::Time.to_string(), "Time");
+        assert_eq!(SampleKind::Depth.to_string(), "Depth");
+        assert_eq!(SampleKind::Ppo2.to_string(), "PPO2");
+        assert_eq!(SampleKind::O2sensor.to_string(), "O2 Sensor");
+        assert_eq!(SampleKind::TTS.to_string(), "TTS");
+    }
+
+    #[test]
+    fn event_kind_display() {
+        assert_eq!(EventKind::DecoStop.to_string(), "Deco Stop");
+        assert_eq!(EventKind::None.to_string(), "");
+        assert_eq!(EventKind::SafetyStop.to_string(), "Safety Stop");
     }
 }
