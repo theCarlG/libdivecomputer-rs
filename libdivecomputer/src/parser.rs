@@ -391,7 +391,7 @@ extern "C" fn sample_callback(
                 let kind = EventKind::from(value.event.type_);
                 let time =
                     Duration::from_secs(value.event.time as u64 + parse_data.sample.time.as_secs());
-                parse_data.sample.event = Some(DiveEvent {
+                parse_data.sample.events.push(DiveEvent {
                     kind,
                     time,
                     flags: value.event.flags,

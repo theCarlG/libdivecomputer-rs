@@ -162,7 +162,6 @@ pub struct Device {
 // The device is accessed through &self methods that go through FFI, where
 // the C library handles any necessary synchronization.
 unsafe impl Send for Device {}
-unsafe impl Sync for Device {}
 
 impl Device {
     /// Open a device connection.
@@ -312,7 +311,7 @@ impl Device {
             if let Err(e) = self.foreach_internal(ForeachData {
                 dive_cb: &mut dive_cb,
                 event_cb: options.on_event,
-                cancel_cb: None,
+                cancel_cb: options.cancel_cb,
             }) {
                 errors.push(e);
             }
@@ -334,6 +333,8 @@ pub struct DownloadOptions<'a> {
     pub fingerprint: Option<&'a [u8]>,
     /// Optional callback for device events (progress, device info, etc.).
     pub on_event: Option<&'a mut dyn FnMut(DeviceEvent)>,
+    /// Optional callback to cancel the download. Return `true` to cancel.
+    pub cancel_cb: Option<&'a dyn Fn() -> bool>,
 }
 
 /// Result of a dive download operation.
@@ -479,18 +480,21 @@ extern "C" fn cancel_callback(userdata: *mut c_void) -> c_int {
 /// Convert a hex string to bytes.
 ///
 /// Prefer [`Fingerprint::from_hex`] for fingerprint-specific use cases.
-pub fn hex_string_to_bytes(hex: &str) -> std::result::Result<Vec<u8>, std::num::ParseIntError> {
+#[deprecated(since = "0.2.0", note = "Use Fingerprint::from_hex instead")]
+pub fn hex_string_to_bytes(hex: &str) -> Result<Vec<u8>> {
     crate::parser::Fingerprint::from_hex(hex).map(|fp| fp.as_bytes().to_vec())
 }
 
 /// Convert bytes to a hex string.
 ///
 /// Prefer [`Fingerprint::to_hex`] for fingerprint-specific use cases.
+#[deprecated(since = "0.2.0", note = "Use Fingerprint::to_hex instead")]
 pub fn bytes_to_hex(data: &[u8]) -> String {
     data.iter().map(|b| format!("{b:02X}")).collect()
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -709,5 +713,6 @@ mod tests {
         let opts = DownloadOptions::default();
         assert!(opts.fingerprint.is_none());
         assert!(opts.on_event.is_none());
+        assert!(opts.cancel_cb.is_none());
     }
 }

@@ -1,13 +1,14 @@
 use std::{
     collections::HashMap,
     fmt::{self, Display},
+    str::FromStr,
     time::Duration,
 };
 
 use libdivecomputer_sys as ffi;
 use serde::{Deserialize, Serialize};
 
-use crate::common::EventKind;
+use crate::{common::EventKind, error::LibError};
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Dive {
@@ -47,15 +48,16 @@ impl Fingerprint {
     /// Parse a hex string into a fingerprint.
     ///
     /// Returns an error if the string has odd length or contains non-hex characters.
-    pub fn from_hex(hex: &str) -> std::result::Result<Self, std::num::ParseIntError> {
+    pub fn from_hex(hex: &str) -> Result<Self, LibError> {
         if !hex.len().is_multiple_of(2) {
-            // Force a ParseIntError by parsing an invalid string.
-            return Err(u8::from_str_radix("xx", 16).unwrap_err());
+            return Err(LibError::InvalidArguments(
+                "hex string must have even length".into(),
+            ));
         }
         let data = (0..hex.len())
             .step_by(2)
             .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
-            .collect::<std::result::Result<Vec<u8>, _>>()?;
+            .collect::<Result<Vec<u8>, _>>()?;
         Ok(Self { data })
     }
 
@@ -66,25 +68,25 @@ impl Fingerprint {
 }
 
 impl TryFrom<String> for Fingerprint {
-    type Error = std::num::ParseIntError;
+    type Error = LibError;
 
-    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::from_hex(&value)
     }
 }
 
 impl TryFrom<&String> for Fingerprint {
-    type Error = std::num::ParseIntError;
+    type Error = LibError;
 
-    fn try_from(value: &String) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: &String) -> Result<Self, Self::Error> {
         Self::from_hex(value)
     }
 }
 
 impl TryFrom<&str> for Fingerprint {
-    type Error = std::num::ParseIntError;
+    type Error = LibError;
 
-    fn try_from(value: &str) -> std::result::Result<Self, Self::Error> {
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::from_hex(value)
     }
 }
@@ -199,16 +201,26 @@ impl From<ffi::dc_divemode_t> for DiveMode {
     }
 }
 
+impl FromStr for DiveMode {
+    type Err = LibError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "freedive" => Ok(Self::Freedive),
+            "gauge" => Ok(Self::Gauge),
+            "oc" => Ok(Self::OC),
+            "ccr" => Ok(Self::CCR),
+            "scr" => Ok(Self::SCR),
+            _ => Err(LibError::InvalidArguments(format!(
+                "unknown dive mode: {s}"
+            ))),
+        }
+    }
+}
+
 impl From<String> for DiveMode {
     fn from(value: String) -> Self {
-        match value.to_lowercase().as_str() {
-            "freedive" => Self::Freedive,
-            "gauge" => Self::Gauge,
-            "oc" => Self::OC,
-            "ccr" => Self::CCR,
-            "scr" => Self::SCR,
-            _ => Self::None,
-        }
+        Self::from_str(&value).unwrap_or(Self::None)
     }
 }
 
@@ -401,14 +413,24 @@ impl fmt::Display for GasUsage {
     }
 }
 
+impl FromStr for GasUsage {
+    type Err = LibError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "oxygen" => Ok(Self::Oxygen),
+            "diluent" => Ok(Self::Diluent),
+            "open circuit" | "opencircuit" => Ok(Self::OpenCircuit),
+            _ => Err(LibError::InvalidArguments(format!(
+                "unknown gas usage: {s}"
+            ))),
+        }
+    }
+}
+
 impl From<String> for GasUsage {
     fn from(value: String) -> Self {
-        match value.to_lowercase().as_str() {
-            "oxygen" => Self::Oxygen,
-            "diluent" => Self::Diluent,
-            "open circuit" | "opencircuit" => Self::OpenCircuit,
-            _ => Self::None,
-        }
+        Self::from_str(&value).unwrap_or(Self::None)
     }
 }
 
@@ -426,7 +448,7 @@ pub struct DiveSample {
     pub depth: f64,
     pub gasmix: Option<Gasmix>,
     pub temperature: Option<f64>,
-    pub event: Option<DiveEvent>,
+    pub events: Vec<DiveEvent>,
     pub rbt: Option<Duration>,
     pub heartbeat: Option<u16>,
     pub bearing: Option<i16>,

@@ -69,7 +69,6 @@ pub struct IoStream {
 // manages the underlying I/O resource. The iostream is owned exclusively
 // by the wrapping Device.
 unsafe impl Send for IoStream {}
-unsafe impl Sync for IoStream {}
 
 impl IoStream {
     /// Open an iostream for the given connection info, auto-dispatching to the

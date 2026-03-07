@@ -88,6 +88,7 @@ fn main() -> Result<()> {
     let result = dev.download_dives(DownloadOptions {
         fingerprint: fp_bytes.as_deref(),
         on_event: Some(&mut on_event),
+        cancel_cb: None,
     });
 
     if result.has_errors() {
