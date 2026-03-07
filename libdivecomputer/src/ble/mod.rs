@@ -523,10 +523,16 @@ impl Drop for BleTransport {
 // --- FFI callback functions ---
 
 extern "C" fn ble_close(io: *mut c_void) -> ffi::dc_status_t {
-    if !io.is_null() {
-        let _transport = unsafe { Box::from_raw(io as *mut BleTransport) };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if !io.is_null() {
+            let _transport = unsafe { Box::from_raw(io as *mut BleTransport) };
+        }
+        ffi::DC_STATUS_SUCCESS
+    }));
+    match result {
+        Ok(status) => status,
+        Err(_) => ffi::DC_STATUS_IO,
     }
-    ffi::DC_STATUS_SUCCESS
 }
 
 extern "C" fn ble_read(
@@ -535,20 +541,26 @@ extern "C" fn ble_read(
     size: usize,
     actual: *mut usize,
 ) -> ffi::dc_status_t {
-    if io.is_null() || data.is_null() {
-        return ffi::DC_STATUS_IO;
-    }
-
-    let transport = unsafe { &*(io as *const BleTransport) };
-    let buffer = unsafe { std::slice::from_raw_parts_mut(data as *mut u8, size) };
-
-    match transport.read_blocking(buffer) {
-        Ok(bytes_read) => {
-            if !actual.is_null() {
-                unsafe { *actual = bytes_read };
-            }
-            ffi::DC_STATUS_SUCCESS
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if io.is_null() || data.is_null() {
+            return ffi::DC_STATUS_IO;
         }
+
+        let transport = unsafe { &*(io as *const BleTransport) };
+        let buffer = unsafe { std::slice::from_raw_parts_mut(data as *mut u8, size) };
+
+        match transport.read_blocking(buffer) {
+            Ok(bytes_read) => {
+                if !actual.is_null() {
+                    unsafe { *actual = bytes_read };
+                }
+                ffi::DC_STATUS_SUCCESS
+            }
+            Err(_) => ffi::DC_STATUS_IO,
+        }
+    }));
+    match result {
+        Ok(status) => status,
         Err(_) => ffi::DC_STATUS_IO,
     }
 }
@@ -559,45 +571,65 @@ extern "C" fn ble_write(
     size: usize,
     actual: *mut usize,
 ) -> ffi::dc_status_t {
-    if io.is_null() || data.is_null() {
-        return ffi::DC_STATUS_IO;
-    }
-
-    let transport = unsafe { &*(io as *const BleTransport) };
-    let data_slice = unsafe { std::slice::from_raw_parts(data as *const u8, size) };
-
-    match transport.write_blocking(data_slice) {
-        Ok(bytes_written) => {
-            if !actual.is_null() {
-                unsafe { *actual = bytes_written };
-            }
-            ffi::DC_STATUS_SUCCESS
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if io.is_null() || data.is_null() {
+            return ffi::DC_STATUS_IO;
         }
+
+        let transport = unsafe { &*(io as *const BleTransport) };
+        let data_slice = unsafe { std::slice::from_raw_parts(data as *const u8, size) };
+
+        match transport.write_blocking(data_slice) {
+            Ok(bytes_written) => {
+                if !actual.is_null() {
+                    unsafe { *actual = bytes_written };
+                }
+                ffi::DC_STATUS_SUCCESS
+            }
+            Err(_) => ffi::DC_STATUS_IO,
+        }
+    }));
+    match result {
+        Ok(status) => status,
         Err(_) => ffi::DC_STATUS_IO,
     }
 }
 
 extern "C" fn ble_poll(io: *mut c_void, timeout: i32) -> ffi::dc_status_t {
-    if io.is_null() {
-        return ffi::DC_STATUS_IO;
-    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if io.is_null() {
+            return ffi::DC_STATUS_IO;
+        }
 
-    let transport = unsafe { &*(io as *const BleTransport) };
-    match transport.poll_blocking(Duration::from_millis(timeout as u64)) {
-        Ok(true) => ffi::DC_STATUS_SUCCESS,
-        Ok(false) => ffi::DC_STATUS_TIMEOUT,
+        let transport = unsafe { &*(io as *const BleTransport) };
+        let millis = if timeout < 0 { 0 } else { timeout as u64 };
+        match transport.poll_blocking(Duration::from_millis(millis)) {
+            Ok(true) => ffi::DC_STATUS_SUCCESS,
+            Ok(false) => ffi::DC_STATUS_TIMEOUT,
+            Err(_) => ffi::DC_STATUS_IO,
+        }
+    }));
+    match result {
+        Ok(status) => status,
         Err(_) => ffi::DC_STATUS_IO,
     }
 }
 
 extern "C" fn ble_set_timeout(io: *mut c_void, timeout: i32) -> ffi::dc_status_t {
-    if io.is_null() {
-        return ffi::DC_STATUS_IO;
-    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if io.is_null() {
+            return ffi::DC_STATUS_IO;
+        }
 
-    let transport = unsafe { &*(io as *const BleTransport) };
-    transport.set_timeout(Duration::from_millis(timeout as u64));
-    ffi::DC_STATUS_SUCCESS
+        let transport = unsafe { &*(io as *const BleTransport) };
+        let millis = if timeout < 0 { 0 } else { timeout as u64 };
+        transport.set_timeout(Duration::from_millis(millis));
+        ffi::DC_STATUS_SUCCESS
+    }));
+    match result {
+        Ok(status) => status,
+        Err(_) => ffi::DC_STATUS_IO,
+    }
 }
 
 extern "C" fn ble_ioctl(
@@ -606,45 +638,51 @@ extern "C" fn ble_ioctl(
     data: *mut c_void,
     size: usize,
 ) -> ffi::dc_status_t {
-    if io.is_null() {
-        return ffi::DC_STATUS_IO;
-    }
-
-    let transport = unsafe { &*(io as *const BleTransport) };
-
-    match request {
-        ffi::DC_IOCTL_BLE_GET_NAME => {
-            if data.is_null() {
-                return ffi::DC_STATUS_IO;
-            }
-            let name = transport.get_name();
-            let buffer = unsafe { std::slice::from_raw_parts_mut(data as *mut u8, size) };
-            let name_bytes = name.as_bytes();
-            let n = std::cmp::min(name_bytes.len(), buffer.len() - 1);
-            buffer[..n].copy_from_slice(&name_bytes[..n]);
-            buffer[n] = 0;
-            ffi::DC_STATUS_SUCCESS
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if io.is_null() {
+            return ffi::DC_STATUS_IO;
         }
-        ffi::DC_IOCTL_BLE_CHARACTERISTIC_READ => {
-            if data.is_null() || size < 16 {
-                return ffi::DC_STATUS_INVALIDARGS;
-            }
-            unsafe {
-                let data_ptr = data as *mut u8;
-                let uuid_bytes = std::slice::from_raw_parts(data_ptr, 16);
-                let Ok(uuid) = Uuid::from_slice(uuid_bytes) else {
-                    return ffi::DC_STATUS_INVALIDARGS;
-                };
-                let readsize = size - 16;
-                let buf = std::slice::from_raw_parts_mut(data_ptr.add(16), readsize);
 
-                if transport.read_characteristic_blocking(uuid, buf).is_err() {
+        let transport = unsafe { &*(io as *const BleTransport) };
+
+        match request {
+            ffi::DC_IOCTL_BLE_GET_NAME => {
+                if data.is_null() {
+                    return ffi::DC_STATUS_IO;
+                }
+                let name = transport.get_name();
+                let buffer = unsafe { std::slice::from_raw_parts_mut(data as *mut u8, size) };
+                let name_bytes = name.as_bytes();
+                let n = std::cmp::min(name_bytes.len(), buffer.len() - 1);
+                buffer[..n].copy_from_slice(&name_bytes[..n]);
+                buffer[n] = 0;
+                ffi::DC_STATUS_SUCCESS
+            }
+            ffi::DC_IOCTL_BLE_CHARACTERISTIC_READ => {
+                if data.is_null() || size < 16 {
                     return ffi::DC_STATUS_INVALIDARGS;
                 }
+                unsafe {
+                    let data_ptr = data as *mut u8;
+                    let uuid_bytes = std::slice::from_raw_parts(data_ptr, 16);
+                    let Ok(uuid) = Uuid::from_slice(uuid_bytes) else {
+                        return ffi::DC_STATUS_INVALIDARGS;
+                    };
+                    let readsize = size - 16;
+                    let buf = std::slice::from_raw_parts_mut(data_ptr.add(16), readsize);
+
+                    if transport.read_characteristic_blocking(uuid, buf).is_err() {
+                        return ffi::DC_STATUS_INVALIDARGS;
+                    }
+                }
+                ffi::DC_STATUS_SUCCESS
             }
-            ffi::DC_STATUS_SUCCESS
+            _ => ffi::DC_STATUS_UNSUPPORTED,
         }
-        _ => ffi::DC_STATUS_UNSUPPORTED,
+    }));
+    match result {
+        Ok(status) => status,
+        Err(_) => ffi::DC_STATUS_IO,
     }
 }
 

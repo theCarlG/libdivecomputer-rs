@@ -126,7 +126,7 @@ impl From<&ConnectionInfo> for Transport {
 }
 
 /// A device event received during download.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum DeviceEvent {
     /// Device is waiting for user action (e.g. press a button).
@@ -358,14 +358,19 @@ impl DownloadResult {
         !self.errors.is_empty()
     }
 
-    /// Consume this result, returning the dives or the first error if no dives were parsed.
+    /// Consume this result, returning the dives if successful, the first error if no dives
+    /// were parsed, or a `PartialDownload` error if some dives succeeded but errors occurred.
     pub fn into_result(self) -> Result<Vec<Dive>> {
-        if self.dives.is_empty()
-            && let Some(e) = self.errors.into_iter().next()
-        {
-            return Err(e);
+        if self.errors.is_empty() {
+            Ok(self.dives)
+        } else if self.dives.is_empty() {
+            Err(self.errors.into_iter().next().unwrap())
+        } else {
+            Err(LibError::PartialDownload {
+                dives: self.dives,
+                errors: self.errors,
+            })
         }
-        Ok(self.dives)
     }
 }
 
@@ -393,46 +398,48 @@ extern "C" fn event_callback(
     data: *const c_void,
     userdata: *mut c_void,
 ) {
-    let foreach_data = unsafe { from_void_ptr::<ForeachData>(userdata) };
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let foreach_data = unsafe { from_void_ptr::<ForeachData>(userdata) };
 
-    let device_event = match event {
-        ffi::DC_EVENT_WAITING => DeviceEvent::Waiting,
-        ffi::DC_EVENT_PROGRESS => {
-            let progress = unsafe { &*(data as *const ffi::dc_event_progress_t) };
-            DeviceEvent::Progress {
-                current: progress.current,
-                maximum: progress.maximum,
+        let device_event = match event {
+            ffi::DC_EVENT_WAITING => DeviceEvent::Waiting,
+            ffi::DC_EVENT_PROGRESS => {
+                let progress = unsafe { &*(data as *const ffi::dc_event_progress_t) };
+                DeviceEvent::Progress {
+                    current: progress.current,
+                    maximum: progress.maximum,
+                }
             }
-        }
-        ffi::DC_EVENT_DEVINFO => {
-            let devinfo = unsafe { &*(data as *const ffi::dc_event_devinfo_t) };
-            DeviceEvent::DevInfo {
-                model: devinfo.model,
-                firmware: devinfo.firmware,
-                serial: devinfo.serial,
+            ffi::DC_EVENT_DEVINFO => {
+                let devinfo = unsafe { &*(data as *const ffi::dc_event_devinfo_t) };
+                DeviceEvent::DevInfo {
+                    model: devinfo.model,
+                    firmware: devinfo.firmware,
+                    serial: devinfo.serial,
+                }
             }
-        }
-        ffi::DC_EVENT_CLOCK => {
-            let clock = unsafe { &*(data as *const ffi::dc_event_clock_t) };
-            DeviceEvent::Clock {
-                devtime: clock.devtime,
-                systime: clock.systime,
+            ffi::DC_EVENT_CLOCK => {
+                let clock = unsafe { &*(data as *const ffi::dc_event_clock_t) };
+                DeviceEvent::Clock {
+                    devtime: clock.devtime,
+                    systime: clock.systime,
+                }
             }
-        }
-        ffi::DC_EVENT_VENDOR => {
-            let vendor = unsafe { &*(data as *const ffi::dc_event_vendor_t) };
-            let data_slice =
-                unsafe { std::slice::from_raw_parts(vendor.data, vendor.size as usize) };
-            DeviceEvent::Vendor {
-                data: data_slice.to_vec(),
+            ffi::DC_EVENT_VENDOR => {
+                let vendor = unsafe { &*(data as *const ffi::dc_event_vendor_t) };
+                let data_slice =
+                    unsafe { std::slice::from_raw_parts(vendor.data, vendor.size as usize) };
+                DeviceEvent::Vendor {
+                    data: data_slice.to_vec(),
+                }
             }
-        }
-        _ => return,
-    };
+            _ => return,
+        };
 
-    if let Some(ref mut cb) = foreach_data.event_cb {
-        cb(device_event);
-    }
+        if let Some(ref mut cb) = foreach_data.event_cb {
+            cb(device_event);
+        }
+    }));
 }
 
 extern "C" fn dive_callback(
@@ -442,25 +449,31 @@ extern "C" fn dive_callback(
     fsize: c_uint,
     userdata: *mut c_void,
 ) -> c_int {
-    let foreach_data = unsafe { from_void_ptr::<ForeachData>(userdata) };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let foreach_data = unsafe { from_void_ptr::<ForeachData>(userdata) };
 
-    let data_slice = unsafe { std::slice::from_raw_parts(data, size as usize) };
-    let fp_slice = unsafe { std::slice::from_raw_parts(fingerprint, fsize as usize) };
+        let data_slice = unsafe { std::slice::from_raw_parts(data, size as usize) };
+        let fp_slice = unsafe { std::slice::from_raw_parts(fingerprint, fsize as usize) };
 
-    if (foreach_data.dive_cb)(data_slice, fp_slice) {
-        1
-    } else {
-        0
-    }
+        if (foreach_data.dive_cb)(data_slice, fp_slice) {
+            1
+        } else {
+            0
+        }
+    }));
+    result.unwrap_or_default()
 }
 
 extern "C" fn cancel_callback(userdata: *mut c_void) -> c_int {
-    let foreach_data = unsafe { from_void_ptr::<ForeachData>(userdata) };
-    if let Some(ref cb) = foreach_data.cancel_cb {
-        if cb() { 1 } else { 0 }
-    } else {
-        0
-    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let foreach_data = unsafe { from_void_ptr::<ForeachData>(userdata) };
+        if let Some(ref cb) = foreach_data.cancel_cb {
+            if cb() { 1 } else { 0 }
+        } else {
+            0
+        }
+    }));
+    result.unwrap_or_default()
 }
 
 /// Convert a hex string to bytes.
@@ -667,13 +680,18 @@ mod tests {
     }
 
     #[test]
-    fn download_result_into_result_has_dives_ignores_errors() {
+    fn download_result_into_result_has_dives_and_errors() {
         let result = DownloadResult {
             dives: vec![Dive::default()],
             errors: vec![LibError::Unknown],
         };
-        let dives = result.into_result().unwrap();
-        assert_eq!(dives.len(), 1);
+        match result.into_result() {
+            Err(LibError::PartialDownload { dives, errors }) => {
+                assert_eq!(dives.len(), 1);
+                assert_eq!(errors.len(), 1);
+            }
+            other => panic!("Expected PartialDownload, got {other:?}"),
+        }
     }
 
     #[test]

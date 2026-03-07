@@ -75,9 +75,22 @@ pub enum LibError {
     /// Unknown error.
     #[error("unknown error")]
     Unknown,
+
+    /// Download partially succeeded: some dives parsed, but errors occurred.
+    #[error("partial download: {} dives ok, {} errors", dives.len(), errors.len())]
+    PartialDownload {
+        /// Successfully parsed dives.
+        dives: Vec<crate::parser::Dive>,
+        /// Errors encountered during parsing.
+        errors: Vec<LibError>,
+    },
 }
 
 impl LibError {
+    /// Create a status error from an FFI return code.
+    ///
+    /// Returns `Unknown` if the code doesn't map to a known `Status` variant,
+    /// which can happen if the C library adds new status codes.
     pub fn status<T>(rc: T) -> Self
     where
         T: TryInto<Status>,
@@ -88,6 +101,10 @@ impl LibError {
         }
     }
 
+    /// Create a status error with additional context about the operation that failed.
+    ///
+    /// Returns `Unknown` if the code doesn't map to a known `Status` variant,
+    /// which can happen if the C library adds new status codes.
     pub fn status_with_context<T>(rc: T, context: impl ToString) -> Self
     where
         T: TryInto<Status>,

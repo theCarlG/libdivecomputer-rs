@@ -1,3 +1,5 @@
+use std::fmt;
+
 use libdivecomputer_sys as ffi;
 use serde::Serialize;
 use serde_repr::Deserialize_repr;
@@ -43,6 +45,25 @@ impl Status {
             Ok(false)
         } else {
             Err(LibError::status_with_context(rc, context))
+        }
+    }
+}
+
+impl fmt::Display for Status {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Success => write!(f, "success"),
+            Self::Done => write!(f, "done"),
+            Self::Unsupported => write!(f, "unsupported"),
+            Self::InvalidArgs => write!(f, "invalid arguments"),
+            Self::NoMemory => write!(f, "out of memory"),
+            Self::NoDevice => write!(f, "no device"),
+            Self::NoAccess => write!(f, "no access"),
+            Self::Io => write!(f, "I/O error"),
+            Self::Timeout => write!(f, "timeout"),
+            Self::Protocol => write!(f, "protocol error"),
+            Self::DataFormat => write!(f, "data format error"),
+            Self::Cancelled => write!(f, "cancelled"),
         }
     }
 }

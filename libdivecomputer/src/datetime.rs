@@ -1,35 +1,21 @@
 use libdivecomputer_sys as ffi;
 
-/// Get the current time as a `jiff::Timestamp`.
-#[allow(dead_code)]
-pub(crate) fn now() -> jiff::Timestamp {
-    let ticks = unsafe { ffi::dc_datetime_now() };
-    jiff::Timestamp::from_second(ticks).expect("invalid timestamp from dc_datetime_now")
-}
-
 /// Convert a `dc_datetime_t` to a `jiff::Timestamp`.
 pub(crate) fn ffi_to_timestamp(dt: &ffi::dc_datetime_t) -> Result<jiff::Timestamp, jiff::Error> {
-    let s = if dt.timezone == i32::MIN {
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}Z",
-            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
-        )
+    let civil = jiff::civil::date(dt.year as i16, dt.month as i8, dt.day as i8)
+        .at(dt.hour as i8, dt.minute as i8, dt.second as i8, 0);
+    if dt.timezone == i32::MIN {
+        // DC_TIMEZONE_NONE — treat as UTC
+        Ok(civil.to_zoned(jiff::tz::TimeZone::UTC)?.timestamp())
     } else {
-        let sign = if dt.timezone < 0 { '-' } else { '+' };
-        let abs_tz = dt.timezone.unsigned_abs();
-        let hours = abs_tz / 3600;
-        let minutes = (abs_tz % 3600) / 60;
-        format!(
-            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}{}{:02}:{:02}",
-            dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, sign, hours, minutes
-        )
-    };
-    s.parse()
+        let offset = jiff::tz::Offset::from_seconds(dt.timezone)?;
+        Ok(offset.to_timestamp(civil)?)
+    }
 }
 
 /// Convert a `jiff::Timestamp` to a `dc_datetime_t` in local time.
 pub(crate) fn timestamp_to_ffi(ts: jiff::Timestamp) -> ffi::dc_datetime_t {
-    let mut dt = unsafe { std::mem::MaybeUninit::<ffi::dc_datetime_t>::zeroed().assume_init() };
+    let mut dt: ffi::dc_datetime_t = unsafe { std::mem::zeroed() };
     unsafe { ffi::dc_datetime_localtime(&mut dt, ts.as_second()) };
     dt
 }

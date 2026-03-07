@@ -208,13 +208,13 @@ impl IoStream {
     /// `Ok(false)` on timeout.
     pub fn poll(&self, timeout_ms: i32) -> Result<bool> {
         let status = unsafe { ffi::dc_iostream_poll(self.ptr, timeout_ms) };
-        if status == ffi::DC_STATUS_SUCCESS {
-            Ok(true)
-        } else if status == ffi::DC_STATUS_TIMEOUT {
-            Ok(false)
-        } else {
-            Status::check(status, "failed to poll iostream")?;
-            unreachable!()
+        match status {
+            ffi::DC_STATUS_SUCCESS => Ok(true),
+            ffi::DC_STATUS_TIMEOUT => Ok(false),
+            _ => {
+                Status::check(status, "failed to poll iostream")?;
+                Ok(false) // unreachable: check() always returns Err for non-success
+            }
         }
     }
 

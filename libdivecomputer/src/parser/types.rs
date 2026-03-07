@@ -487,7 +487,19 @@ impl fmt::Display for Deco {
                 "Safety stop: {} min @ {depth}m",
                 self.time.as_secs() / 60
             ),
-            _ => Ok(()),
+            DecoKind::None => write!(f, "None"),
+        }
+    }
+}
+
+impl fmt::Display for DecoKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => write!(f, "None"),
+            Self::NDL => write!(f, "NDL"),
+            Self::DecoStop { depth } => write!(f, "Deco stop @ {depth}m"),
+            Self::DeepStop { depth } => write!(f, "Deep stop @ {depth}m"),
+            Self::SafetyStop { depth } => write!(f, "Safety stop @ {depth}m"),
         }
     }
 }

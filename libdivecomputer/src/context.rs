@@ -6,19 +6,21 @@ use std::{
 
 use libdivecomputer_sys as ffi;
 
+use serde::{Deserialize, Serialize};
+
 use crate::{
     error::{LibError, Result},
     status::Status,
     transport::TransportSet,
 };
 
-type LogCallback = Box<dyn Fn(LogLevel, &str)>;
+type LogCallback = Box<dyn Fn(LogLevel, &str) + Send + Sync>;
 
 /// Wrapper around `dc_context_t`.
 pub struct Context {
     pub(crate) ptr: *mut ffi::dc_context_t,
     /// Stored so the closure is freed on drop.
-    _log_callback: Option<LogCallback>,
+    _log_callback: Option<Box<LogCallback>>,
 }
 
 impl Context {
@@ -51,7 +53,7 @@ impl Context {
     /// Set the log callback function.
     pub fn set_logfunc<F>(&mut self, callback: F) -> Result<()>
     where
-        F: Fn(LogLevel, &str) + 'static,
+        F: Fn(LogLevel, &str) + Send + Sync + 'static,
     {
         // Double-box: Box<dyn Fn> is a fat pointer, but we need a thin *mut c_void
         // for the C callback. Box<Box<dyn Fn>> gives us a thin pointer.
@@ -71,8 +73,8 @@ impl Context {
             ));
         }
 
-        // Free any previous callback, store the new one.
-        self._log_callback = Some(unsafe { *Box::from_raw(raw) });
+        // Keep the double-boxed pointer alive — C holds `raw` as userdata.
+        self._log_callback = Some(unsafe { Box::from_raw(raw) });
 
         Ok(())
     }
@@ -117,6 +119,15 @@ pub struct ContextBuilder {
     log_fn: Option<LogCallback>,
 }
 
+impl std::fmt::Debug for ContextBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ContextBuilder")
+            .field("log_level", &self.log_level)
+            .field("log_fn", &self.log_fn.as_ref().map(|_| ".."))
+            .finish()
+    }
+}
+
 impl ContextBuilder {
     pub fn log_level(mut self, level: LogLevel) -> Self {
         self.log_level = Some(level);
@@ -125,7 +136,7 @@ impl ContextBuilder {
 
     pub fn log_fn<F>(mut self, f: F) -> Self
     where
-        F: Fn(LogLevel, &str) + 'static,
+        F: Fn(LogLevel, &str) + Send + Sync + 'static,
     {
         self.log_fn = Some(Box::new(f));
         self
@@ -147,7 +158,7 @@ impl ContextBuilder {
 }
 
 /// Log level for the libdivecomputer context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u32)]
 #[non_exhaustive]
 pub enum LogLevel {
@@ -222,8 +233,8 @@ extern "C" fn log_callback_wrapper(
     message: *const c_char,
     userdata: *mut c_void,
 ) {
-    unsafe {
-        let callback = &*(userdata as *const Box<dyn Fn(LogLevel, &str)>);
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        let callback = &*(userdata as *const Box<dyn Fn(LogLevel, &str) + Send + Sync>);
         let level = match loglevel {
             ffi::DC_LOGLEVEL_ERROR => LogLevel::Error,
             ffi::DC_LOGLEVEL_WARNING => LogLevel::Warning,
@@ -235,5 +246,5 @@ extern "C" fn log_callback_wrapper(
         if let Ok(msg) = CStr::from_ptr(message).to_str() {
             callback(level, msg);
         }
-    }
+    }));
 }

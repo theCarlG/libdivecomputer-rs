@@ -46,7 +46,7 @@ impl Parser {
     ) -> Result<Self> {
         let mut ptr = ptr::null_mut();
         let status = unsafe {
-            ffi::dc_parser_new(&mut ptr, device_ptr, data.as_ptr() as *mut _, data.len())
+            ffi::dc_parser_new(&mut ptr, device_ptr, data.as_ptr(), data.len())
         };
         Status::check(status, "failed to create parser from device")?;
         Ok(Self { ptr })
@@ -60,7 +60,7 @@ impl Parser {
                 &mut ptr,
                 ctx.ptr(),
                 desc.ptr,
-                data.as_ptr() as *mut _,
+                data.as_ptr(),
                 data.len(),
             )
         };
@@ -350,7 +350,7 @@ extern "C" fn sample_callback(
     pvalue: *const ffi::dc_sample_value_t,
     userdata: *mut c_void,
 ) {
-    unsafe {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         let parse_data = from_void_ptr::<ParseData>(userdata);
         let value = *pvalue;
 
@@ -453,5 +453,5 @@ extern "C" fn sample_callback(
 
             _ => {}
         }
-    }
+    }));
 }
