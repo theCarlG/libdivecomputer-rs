@@ -315,7 +315,10 @@ mod tests {
         assert_eq!(Family::None.to_string(), "None");
         assert_eq!(Family::SuuntoEonSteel.to_string(), "Suunto Eon Steel");
         assert_eq!(Family::HwOstc.to_string(), "HW OSTC");
-        assert_eq!(Family::ShearwaterPredator.to_string(), "Shearwater Predator");
+        assert_eq!(
+            Family::ShearwaterPredator.to_string(),
+            "Shearwater Predator"
+        );
     }
 
     #[test]

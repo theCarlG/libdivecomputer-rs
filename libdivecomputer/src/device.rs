@@ -302,9 +302,7 @@ impl Device {
 
         {
             let mut dive_cb = |data: &[u8], fingerprint: &[u8]| -> bool {
-                match Parser::from_device(self, data)
-                    .and_then(|parser| parser.parse(fingerprint))
-                {
+                match Parser::from_device(self, data).and_then(|parser| parser.parse(fingerprint)) {
                     Ok(dive) => dives.push(dive),
                     Err(e) => errors.push(e),
                 }
@@ -337,7 +335,6 @@ pub struct DownloadOptions<'a> {
     /// Optional callback for device events (progress, device info, etc.).
     pub on_event: Option<&'a mut dyn FnMut(DeviceEvent)>,
 }
-
 
 /// Result of a dive download operation.
 ///

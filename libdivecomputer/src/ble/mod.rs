@@ -726,8 +726,8 @@ pub mod android {
 
     /// Attach the current thread to the JVM and return a guard that detaches on drop.
     /// Must be called on any spawned thread before using btleplug APIs.
-    pub fn attach_current_thread(
-    ) -> std::result::Result<jni::AttachGuard<'static>, Box<dyn std::error::Error>> {
+    pub fn attach_current_thread()
+    -> std::result::Result<jni::AttachGuard<'static>, Box<dyn std::error::Error>> {
         let vm = JAVAVM
             .get()
             .ok_or("JavaVM not initialized — call init() first")?;

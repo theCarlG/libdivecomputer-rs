@@ -297,9 +297,15 @@ mod tests {
 
     #[test]
     fn event_kind_from_known_values() {
-        assert_eq!(EventKind::from(ffi::SAMPLE_EVENT_DECOSTOP), EventKind::DecoStop);
+        assert_eq!(
+            EventKind::from(ffi::SAMPLE_EVENT_DECOSTOP),
+            EventKind::DecoStop
+        );
         assert_eq!(EventKind::from(ffi::SAMPLE_EVENT_ASCENT), EventKind::Ascent);
-        assert_eq!(EventKind::from(ffi::SAMPLE_EVENT_BOOKMARK), EventKind::Bookmark);
+        assert_eq!(
+            EventKind::from(ffi::SAMPLE_EVENT_BOOKMARK),
+            EventKind::Bookmark
+        );
         assert_eq!(EventKind::from(ffi::SAMPLE_EVENT_STRING), EventKind::String);
     }
 
