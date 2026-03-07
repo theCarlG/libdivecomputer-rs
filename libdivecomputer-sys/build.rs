@@ -26,7 +26,7 @@ fn main() -> std::io::Result<()> {
     run_command(
         ".",
         "cp",
-        &vec!["-av", "libdivecomputer/.", libdc_path_disp.as_str()],
+        &["-av", "libdivecomputer/.", libdc_path_disp.as_str()],
     );
 
     if !std::fs::exists(libdc_path.join("configure"))? {
@@ -253,44 +253,41 @@ fn get_clang_args(target_os: &str, target_arch: &str, lib_root: &Path) -> Vec<St
     ];
 
     // Add target-specific clang arguments
-    match target_os {
-        "android" => {
-            let ndk_home = env::var("ANDROID_NDK_HOME")
-                .or_else(|_| env::var("NDK_HOME"))
-                .expect("ANDROID_NDK_HOME required for Android");
+    if target_os == "android" {
+        let ndk_home = env::var("ANDROID_NDK_HOME")
+            .or_else(|_| env::var("NDK_HOME"))
+            .expect("ANDROID_NDK_HOME required for Android");
 
-            let host_tag = if cfg!(target_os = "windows") {
-                "windows-x86_64"
-            } else if cfg!(target_os = "macos") {
-                "darwin-x86_64"
-            } else {
-                "linux-x86_64"
-            };
+        let host_tag = if cfg!(target_os = "windows") {
+            "windows-x86_64"
+        } else if cfg!(target_os = "macos") {
+            "darwin-x86_64"
+        } else {
+            "linux-x86_64"
+        };
 
-            let sysroot = format!("{ndk_home}/toolchains/llvm/prebuilt/{host_tag}/sysroot");
-            args.push(format!("--sysroot={sysroot}"));
+        let sysroot = format!("{ndk_home}/toolchains/llvm/prebuilt/{host_tag}/sysroot");
+        args.push(format!("--sysroot={sysroot}"));
 
-            match target_arch {
-                "aarch64" => {
-                    args.push("-target".to_string());
-                    args.push("aarch64-linux-android21".to_string());
-                }
-                "arm" => {
-                    args.push("-target".to_string());
-                    args.push("armv7a-linux-androideabi16".to_string());
-                }
-                "x86_64" => {
-                    args.push("-target".to_string());
-                    args.push("x86_64-linux-android21".to_string());
-                }
-                "x86" => {
-                    args.push("-target".to_string());
-                    args.push("i686-linux-android16".to_string());
-                }
-                _ => {}
+        match target_arch {
+            "aarch64" => {
+                args.push("-target".to_string());
+                args.push("aarch64-linux-android21".to_string());
             }
+            "arm" => {
+                args.push("-target".to_string());
+                args.push("armv7a-linux-androideabi16".to_string());
+            }
+            "x86_64" => {
+                args.push("-target".to_string());
+                args.push("x86_64-linux-android21".to_string());
+            }
+            "x86" => {
+                args.push("-target".to_string());
+                args.push("i686-linux-android16".to_string());
+            }
+            _ => {}
         }
-        _ => {}
     }
 
     args
@@ -317,13 +314,10 @@ fn copy_directory(src: &Path, dst: &Path) -> std::io::Result<()> {
 fn setup_xbuild_environment(target: &str, target_os: &str) {
     println!("cargo:rustc-env=XBUILD_TARGET={target}");
 
-    match target_os {
-        "android" => {
-            if let Ok(ndk_home) = env::var("ANDROID_NDK_HOME") {
-                println!("cargo:rustc-env=XBUILD_ANDROID_NDK={ndk_home}");
-            }
+    if target_os == "android" {
+        if let Ok(ndk_home) = env::var("ANDROID_NDK_HOME") {
+            println!("cargo:rustc-env=XBUILD_ANDROID_NDK={ndk_home}");
         }
-        _ => {}
     }
 }
 
