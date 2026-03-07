@@ -1,5 +1,5 @@
 use clap::{Parser as ClapParser, ValueEnum};
-use libdivecomputer::{Context, Descriptor, Dive, Family, LogLevel, Parser};
+use libdivecomputer::{Context, Descriptor, Dive, Family, Fingerprint, LogLevel, Parser};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -86,14 +86,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let data = fs::read(file_path)?;
         let file_size = data.len();
 
-        let fingerprint = if data.len() > 16 {
+        let fingerprint = Fingerprint::from(if data.len() > 16 {
             &data[12..16]
         } else {
             &data
-        };
+        });
 
         let parser = Parser::from_descriptor(&ctx, &desc, &data)?;
-        match parser.parse(fingerprint) {
+        match parser.parse(&fingerprint) {
             Ok(dive) => {
                 dive_output.dives.push(DiveData {
                     dive,

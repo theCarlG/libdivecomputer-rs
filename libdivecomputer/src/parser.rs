@@ -85,9 +85,9 @@ impl Parser {
     }
 
     /// Parse all fields and samples into a `Dive`.
-    pub fn parse(&self, fingerprint: &[u8]) -> Result<Dive> {
+    pub fn parse(&self, fingerprint: &Fingerprint) -> Result<Dive> {
         let mut dive = Dive {
-            fingerprint: Fingerprint::from(fingerprint),
+            fingerprint: fingerprint.clone(),
             ..parse_fields(self.ptr)?
         };
 

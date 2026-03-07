@@ -14,7 +14,7 @@ use crate::{
     descriptor::Descriptor,
     error::{LibError, Result},
     iostream::IoStream,
-    parser::{Dive, Parser},
+    parser::{Dive, Fingerprint, Parser},
     status::Status,
     transport::Transport,
 };
@@ -147,7 +147,7 @@ pub enum DeviceEvent {
 
 /// Callback data passed to the FFI during foreach.
 struct ForeachData<'d, 'e, 'c> {
-    dive_cb: &'d mut dyn FnMut(&[u8], &[u8]) -> bool,
+    dive_cb: &'d mut dyn FnMut(&[u8], &Fingerprint) -> bool,
     event_cb: Option<&'e mut dyn FnMut(DeviceEvent)>,
     cancel_cb: Option<&'c dyn Fn() -> bool>,
 }
@@ -176,21 +176,18 @@ impl Device {
     }
 
     /// Set the fingerprint for incremental downloads.
-    pub fn set_fingerprint(&self, fingerprint: &[u8]) -> Result<()> {
+    pub fn set_fingerprint(&self, fingerprint: &Fingerprint) -> Result<()> {
+        let bytes = fingerprint.as_bytes();
         let status = unsafe {
-            ffi::dc_device_set_fingerprint(
-                self.ptr,
-                fingerprint.as_ptr(),
-                fingerprint.len() as c_uint,
-            )
+            ffi::dc_device_set_fingerprint(self.ptr, bytes.as_ptr(), bytes.len() as c_uint)
         };
         Status::check(status, "failed to set fingerprint")
     }
 
     /// Set the fingerprint from a hex string.
     pub fn set_fingerprint_hex(&self, hex: &str) -> Result<()> {
-        let fp = crate::parser::Fingerprint::from_hex(hex)?;
-        self.set_fingerprint(fp.as_bytes())
+        let fp = Fingerprint::from_hex(hex)?;
+        self.set_fingerprint(&fp)
     }
 
     /// Download all dives, calling `dive_cb` for each.
@@ -199,7 +196,7 @@ impl Device {
     /// Optionally provide an event callback and/or a cancel callback.
     pub fn foreach(
         &self,
-        dive_cb: &mut dyn FnMut(&[u8], &[u8]) -> bool,
+        dive_cb: &mut dyn FnMut(&[u8], &Fingerprint) -> bool,
         event_cb: Option<&mut dyn FnMut(DeviceEvent)>,
         cancel_cb: Option<&dyn Fn() -> bool>,
     ) -> Result<()> {
@@ -300,7 +297,7 @@ impl Device {
         let mut errors: Vec<LibError> = Vec::new();
 
         {
-            let mut dive_cb = |data: &[u8], fingerprint: &[u8]| -> bool {
+            let mut dive_cb = |data: &[u8], fingerprint: &Fingerprint| -> bool {
                 match Parser::from_device(self, data).and_then(|parser| parser.parse(fingerprint)) {
                     Ok(dive) => dives.push(dive),
                     Err(e) => errors.push(e),
@@ -336,7 +333,7 @@ impl Device {
 #[derive(Default)]
 pub struct DownloadOptions<'a> {
     /// Fingerprint for incremental downloads. Only dives newer than this will be downloaded.
-    pub fingerprint: Option<&'a [u8]>,
+    pub fingerprint: Option<&'a Fingerprint>,
     /// Optional callback for device events (progress, device info, etc.).
     pub on_event: Option<&'a mut dyn FnMut(DeviceEvent)>,
     /// Optional callback to cancel the download. Return `true` to cancel.
@@ -461,8 +458,9 @@ extern "C" fn dive_callback(
 
         let data_slice = unsafe { std::slice::from_raw_parts(data, size as usize) };
         let fp_slice = unsafe { std::slice::from_raw_parts(fingerprint, fsize as usize) };
+        let fp = Fingerprint::from(fp_slice);
 
-        if (foreach_data.dive_cb)(data_slice, fp_slice) {
+        if (foreach_data.dive_cb)(data_slice, &fp) {
             1
         } else {
             0

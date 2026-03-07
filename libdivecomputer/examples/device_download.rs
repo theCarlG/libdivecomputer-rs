@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser as ClapParser, ValueEnum};
 use libdivecomputer::{
-    Context, Descriptor, Device, DeviceEvent, Dive, DownloadOptions, IoStream, LogLevel, Result,
-    Transport, scan,
+    Context, Descriptor, Device, DeviceEvent, Dive, DownloadOptions, Fingerprint, IoStream,
+    LogLevel, Result, Transport, scan,
 };
 use serde::{Deserialize, Serialize};
 
@@ -68,9 +68,8 @@ fn main() -> Result<()> {
     let fp_bytes = args
         .fingerprint
         .as_ref()
-        .map(|fp| libdivecomputer::device::hex_string_to_bytes(fp))
-        .transpose()
-        .map_err(|e| libdivecomputer::LibError::ParseError(e.to_string()))?;
+        .map(|fp| Fingerprint::from_hex(fp))
+        .transpose()?;
 
     let mut on_event = |event: DeviceEvent| match event {
         DeviceEvent::Progress { current, maximum } => {
@@ -86,7 +85,7 @@ fn main() -> Result<()> {
     };
 
     let result = dev.download_dives(DownloadOptions {
-        fingerprint: fp_bytes.as_deref(),
+        fingerprint: fp_bytes.as_ref(),
         on_event: Some(&mut on_event),
         cancel_cb: None,
     });
