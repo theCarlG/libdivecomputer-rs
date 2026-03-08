@@ -301,16 +301,13 @@ fn setup_windows_build(libdc_path: &Path, lib_root: &Path) -> std::io::Result<()
     let lib_dir = lib_root.join("lib");
     let inc_dir = lib_root.join("include");
     std::fs::create_dir_all(&lib_dir)?;
-    copy_directory(&include_dir, &inc_dir)?;
 
-    // Generate config.h (normally produced by autotools configure)
+    // Generate headers before copying so they're included in the copy
     generate_config_h(&src_dir)?;
-
-    // Generate version.h from version.h.in
     generate_version_h(&include_dir)?;
-
-    // Generate revision.h
     generate_revision_h(libdc_path, &src_dir)?;
+
+    copy_directory(&include_dir, &inc_dir)?;
 
     // Collect all C source files (same list as the .vcxproj, using serial_win32 instead of serial_posix)
     let mut sources: Vec<PathBuf> = Vec::new();
@@ -337,8 +334,7 @@ fn setup_windows_build(libdc_path: &Path, lib_root: &Path) -> std::io::Result<()
         .define("HAVE_WS2BTH_H", None)
         .define("HAVE__MKGMTIME", None)
         .define("_CRT_SECURE_NO_WARNINGS", None)
-        .warnings(false)
-        .static_flag(true);
+        .warnings(false);
 
     // Optional libusb support via environment variable
     if let Ok(libusb_dir) = env::var("LIBUSB_DIR") {
