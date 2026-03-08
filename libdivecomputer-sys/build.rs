@@ -362,10 +362,16 @@ fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
         "aarch64" => "arm64",
         other => other,
     };
-    let cflags = format!("-fPIC -O2 -isysroot {sdk_path} -arch {apple_arch}");
+    let min_ios_version = env::var("IPHONEOS_DEPLOYMENT_TARGET").unwrap_or_else(|_| "16.0".to_string());
+    let version_flag = if target.contains("sim") {
+        format!("-mios-simulator-version-min={min_ios_version}")
+    } else {
+        format!("-miphoneos-version-min={min_ios_version}")
+    };
+    let cflags = format!("-fPIC -O2 -isysroot {sdk_path} -arch {apple_arch} {version_flag}");
     let host_arg = format!("--host={host_triple}");
 
-    let ldflags = format!("-fPIC -isysroot {sdk_path} -arch {apple_arch}");
+    let ldflags = format!("-fPIC -isysroot {sdk_path} -arch {apple_arch} {version_flag}");
 
     run_command_with_env(
         libdc_path,
