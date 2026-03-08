@@ -239,9 +239,21 @@ fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
 
     // Determine SDK and host triple
     let (sdk, host_triple) = if target.contains("sim") {
-        ("iphonesimulator", format!("{}-apple-darwin", target.split('-').next().unwrap_or("aarch64")))
+        (
+            "iphonesimulator",
+            format!(
+                "{}-apple-darwin",
+                target.split('-').next().unwrap_or("aarch64")
+            ),
+        )
     } else {
-        ("iphoneos", format!("{}-apple-darwin", target.split('-').next().unwrap_or("aarch64")))
+        (
+            "iphoneos",
+            format!(
+                "{}-apple-darwin",
+                target.split('-').next().unwrap_or("aarch64")
+            ),
+        )
     };
 
     // Get SDK path via xcrun
@@ -267,7 +279,10 @@ fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
     .trim()
     .to_string();
 
-    let cflags = format!("-fPIC -O2 -isysroot {sdk_path} -arch {}", target.split('-').next().unwrap_or("arm64"));
+    let cflags = format!(
+        "-fPIC -O2 -isysroot {sdk_path} -arch {}",
+        target.split('-').next().unwrap_or("arm64")
+    );
     let host_arg = format!("--host={host_triple}");
 
     run_command_with_env(
@@ -389,12 +404,11 @@ fn generate_config_h(src_dir: &Path) -> std::io::Result<()> {
 
 fn generate_version_h(include_dir: &Path) -> std::io::Result<()> {
     // Read version numbers from configure.ac (they're m4_define'd at the top)
-    let version_h_in = std::fs::read_to_string(
-        include_dir.join("libdivecomputer").join("version.h.in"),
-    )?;
+    let version_h_in =
+        std::fs::read_to_string(include_dir.join("libdivecomputer").join("version.h.in"))?;
 
     let version_h = version_h_in
-        .replace("@DC_VERSION@", "0.10.0-devel-Subsurface-NG")
+        .replace("@DC_VERSION@", "0.10.0-Divr")
         .replace("@DC_VERSION_MAJOR@", "0")
         .replace("@DC_VERSION_MINOR@", "10")
         .replace("@DC_VERSION_MICRO@", "0");
