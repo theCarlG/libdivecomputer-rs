@@ -352,19 +352,45 @@ fn setup_windows_build(libdc_path: &Path, lib_root: &Path) -> std::io::Result<()
         .warnings(false);
 
     // Optional libusb support via environment variable
+    // Supports vcpkg layout (include/libusb-1.0/libusb.h) and manual installs
     if let Ok(libusb_dir) = env::var("LIBUSB_DIR") {
         build.define("HAVE_LIBUSB", None);
-        build.include(format!("{libusb_dir}/include"));
+        let libusb_include = PathBuf::from(&libusb_dir).join("include");
+        // libdivecomputer includes <libusb.h> directly, but vcpkg/releases
+        // put it under include/libusb-1.0/libusb.h
+        let nested = libusb_include.join("libusb-1.0");
+        if nested.exists() {
+            build.include(&nested);
+        }
+        build.include(&libusb_include);
+        // Check for VS2022 static lib layout (official releases)
+        let vs_lib = PathBuf::from(&libusb_dir).join("VS2022").join("MS64").join("static");
+        if vs_lib.exists() {
+            println!("cargo:rustc-link-search=native={}", vs_lib.display());
+        }
         println!("cargo:rustc-link-search=native={libusb_dir}/lib");
-        println!("cargo:rustc-link-lib=usb-1.0");
+        println!("cargo:rustc-link-lib=static=libusb-1.0");
     }
 
     // Optional hidapi support via environment variable
+    // Supports vcpkg layout (include/hidapi/hidapi.h) and manual installs
     if let Ok(hidapi_dir) = env::var("HIDAPI_DIR") {
         build.define("HAVE_HIDAPI", None);
-        build.include(format!("{hidapi_dir}/include"));
+        let hidapi_include = PathBuf::from(&hidapi_dir).join("include");
+        // libdivecomputer includes <hidapi.h> directly, but vcpkg/releases
+        // put it under include/hidapi/hidapi.h
+        let nested = hidapi_include.join("hidapi");
+        if nested.exists() {
+            build.include(&nested);
+        }
+        build.include(&hidapi_include);
+        // Check for x64 lib layout (official releases)
+        let x64_lib = PathBuf::from(&hidapi_dir).join("x64");
+        if x64_lib.exists() {
+            println!("cargo:rustc-link-search=native={}", x64_lib.display());
+        }
         println!("cargo:rustc-link-search=native={hidapi_dir}/lib");
-        println!("cargo:rustc-link-lib=hidapi");
+        println!("cargo:rustc-link-lib=static=hidapi");
     }
 
     for src in &sources {
