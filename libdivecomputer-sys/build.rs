@@ -21,16 +21,14 @@ fn main() -> std::io::Result<()> {
     let libdc_path = out_dir.join("libdivecomputer");
     let lib_root = out_dir.join("libdc");
 
-    let libdc_path_disp = libdc_path.display().to_string();
+    // Use cross-platform copy_directory instead of Unix-only `cp -av`
+    copy_directory(Path::new("libdivecomputer"), &libdc_path)?;
 
-    run_command(
-        ".",
-        "cp",
-        &["-av", "libdivecomputer/.", libdc_path_disp.as_str()],
-    );
-
-    if !std::fs::exists(libdc_path.join("configure"))? {
-        run_command(&libdc_path, "autoreconf", &["--install"]);
+    // Windows doesn't have autotools — skip autoreconf/configure/make entirely
+    if target_os != "windows" {
+        if !std::fs::exists(libdc_path.join("configure"))? {
+            run_command(&libdc_path, "autoreconf", &["--install"]);
+        }
     }
 
     match target_os.as_str() {
@@ -39,11 +37,14 @@ fn main() -> std::io::Result<()> {
             // Android uses ndk-build, so we skip the autotools build process
         }
         "linux" => setup_linux_build(&libdc_path, &lib_root),
+        "macos" => setup_macos_build(&libdc_path, &lib_root),
+        "ios" => setup_ios_build(&libdc_path, &lib_root, &target),
+        "windows" => setup_windows_build(&libdc_path, &lib_root)?,
         _ => panic!("Unsupported target OS: {target_os}"),
     }
 
-    // Build the library (skip for Android as ndk-build handles everything)
-    if target_os != "android" {
+    // Build the library via autotools (skip for Android/Windows which use their own build systems)
+    if target_os != "android" && target_os != "windows" {
         run_command(&libdc_path, "make", &[""]);
         run_command(&libdc_path, "make", &["install"]);
     }
@@ -216,6 +217,211 @@ fn setup_linux_build(libdc_path: &Path, lib_root: &Path) {
     );
 }
 
+fn setup_macos_build(libdc_path: &Path, lib_root: &Path) {
+    let prefix = format!("--prefix={}", lib_root.display());
+
+    // macOS with static build, IOKit serial support auto-detected by configure
+    run_command_with_env(
+        libdc_path,
+        "./configure",
+        &[
+            prefix.as_str(),
+            "--disable-shared",
+            "--enable-static",
+            "--without-bluez",
+        ],
+        &[("CFLAGS", "-fPIC -O2"), ("LDFLAGS", "-fPIC")],
+    );
+}
+
+fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
+    let prefix = format!("--prefix={}", lib_root.display());
+
+    // Determine SDK and host triple
+    let (sdk, host_triple) = if target.contains("sim") {
+        ("iphonesimulator", format!("{}-apple-darwin", target.split('-').next().unwrap_or("aarch64")))
+    } else {
+        ("iphoneos", format!("{}-apple-darwin", target.split('-').next().unwrap_or("aarch64")))
+    };
+
+    // Get SDK path via xcrun
+    let sdk_path = String::from_utf8(
+        Command::new("xcrun")
+            .args(["--sdk", sdk, "--show-sdk-path"])
+            .output()
+            .expect("Failed to run xcrun")
+            .stdout,
+    )
+    .expect("Invalid UTF-8 from xcrun")
+    .trim()
+    .to_string();
+
+    let cc = String::from_utf8(
+        Command::new("xcrun")
+            .args(["--sdk", sdk, "--find", "clang"])
+            .output()
+            .expect("Failed to find clang via xcrun")
+            .stdout,
+    )
+    .expect("Invalid UTF-8 from xcrun")
+    .trim()
+    .to_string();
+
+    let cflags = format!("-fPIC -O2 -isysroot {sdk_path} -arch {}", target.split('-').next().unwrap_or("arm64"));
+    let host_arg = format!("--host={host_triple}");
+
+    run_command_with_env(
+        libdc_path,
+        "./configure",
+        &[
+            prefix.as_str(),
+            "--disable-shared",
+            "--enable-static",
+            "--without-libusb",
+            "--without-hidapi",
+            "--without-bluez",
+            host_arg.as_str(),
+        ],
+        &[
+            ("CC", &cc),
+            ("CFLAGS", &cflags),
+            ("LDFLAGS", &format!("-fPIC -isysroot {sdk_path}")),
+        ],
+    );
+}
+
+fn setup_windows_build(libdc_path: &Path, lib_root: &Path) -> std::io::Result<()> {
+    // On Windows we skip autotools entirely and use the cc crate to compile all C sources.
+    // This mirrors what the MSVC .vcxproj does.
+
+    let src_dir = libdc_path.join("src");
+    let include_dir = libdc_path.join("include");
+
+    // Create output directories
+    let lib_dir = lib_root.join("lib");
+    let inc_dir = lib_root.join("include");
+    std::fs::create_dir_all(&lib_dir)?;
+    copy_directory(&include_dir, &inc_dir)?;
+
+    // Generate config.h (normally produced by autotools configure)
+    generate_config_h(&src_dir)?;
+
+    // Generate version.h from version.h.in
+    generate_version_h(&include_dir)?;
+
+    // Generate revision.h
+    generate_revision_h(libdc_path, &src_dir)?;
+
+    // Collect all C source files (same list as the .vcxproj, using serial_win32 instead of serial_posix)
+    let mut sources: Vec<PathBuf> = Vec::new();
+    for entry in std::fs::read_dir(&src_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("c") {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            // Skip the POSIX serial implementation (we use serial_win32.c on Windows)
+            if name == "serial_posix.c" {
+                continue;
+            }
+            sources.push(path);
+        }
+    }
+
+    let mut build = cc::Build::new();
+    build
+        .include(&include_dir)
+        .include(&src_dir) // for config.h, revision.h, internal headers
+        .define("ENABLE_LOGGING", None)
+        .define("HAVE_VERSION_SUFFIX", None)
+        .define("HAVE_AF_IRDA_H", None)
+        .define("HAVE_WS2BTH_H", None)
+        .define("HAVE__MKGMTIME", None)
+        .define("_CRT_SECURE_NO_WARNINGS", None)
+        .warnings(false)
+        .static_flag(true);
+
+    // Optional libusb support via environment variable
+    if let Ok(libusb_dir) = env::var("LIBUSB_DIR") {
+        build.define("HAVE_LIBUSB", None);
+        build.include(format!("{libusb_dir}/include"));
+        println!("cargo:rustc-link-search=native={libusb_dir}/lib");
+        println!("cargo:rustc-link-lib=usb-1.0");
+    }
+
+    // Optional hidapi support via environment variable
+    if let Ok(hidapi_dir) = env::var("HIDAPI_DIR") {
+        build.define("HAVE_HIDAPI", None);
+        build.include(format!("{hidapi_dir}/include"));
+        println!("cargo:rustc-link-search=native={hidapi_dir}/lib");
+        println!("cargo:rustc-link-lib=hidapi");
+    }
+
+    for src in &sources {
+        build.file(src);
+    }
+
+    build.compile("divecomputer");
+
+    Ok(())
+}
+
+fn generate_config_h(src_dir: &Path) -> std::io::Result<()> {
+    // Minimal config.h for Windows — mirrors what autotools would detect on MSVC
+    let config = r#"/* config.h - Generated by build.rs for Windows */
+#ifndef CONFIG_H
+#define CONFIG_H
+
+/* Enable logging support */
+#define ENABLE_LOGGING 1
+
+/* Version suffix present */
+#define HAVE_VERSION_SUFFIX 1
+
+/* Windows IrDA support via af_irda.h */
+#define HAVE_AF_IRDA_H 1
+
+/* Windows Bluetooth support via ws2bth.h */
+#define HAVE_WS2BTH_H 1
+
+/* Windows has _mkgmtime */
+#define HAVE__MKGMTIME 1
+
+#endif /* CONFIG_H */
+"#;
+    std::fs::write(src_dir.join("config.h"), config)
+}
+
+fn generate_version_h(include_dir: &Path) -> std::io::Result<()> {
+    // Read version numbers from configure.ac (they're m4_define'd at the top)
+    let version_h_in = std::fs::read_to_string(
+        include_dir.join("libdivecomputer").join("version.h.in"),
+    )?;
+
+    let version_h = version_h_in
+        .replace("@DC_VERSION@", "0.10.0-devel-Subsurface-NG")
+        .replace("@DC_VERSION_MAJOR@", "0")
+        .replace("@DC_VERSION_MINOR@", "10")
+        .replace("@DC_VERSION_MICRO@", "0");
+
+    std::fs::write(
+        include_dir.join("libdivecomputer").join("version.h"),
+        version_h,
+    )
+}
+
+fn generate_revision_h(libdc_path: &Path, src_dir: &Path) -> std::io::Result<()> {
+    // Try to read the revision file, fall back to empty string
+    let revision = std::fs::read_to_string(libdc_path.join("revision"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    std::fs::write(
+        src_dir.join("revision.h"),
+        format!("#define DC_VERSION_REVISION \"{revision}\"\n"),
+    )
+}
+
 fn setup_link_libraries(target_os: &str, lib_root: &Path) {
     // Add our built library
     println!(
@@ -242,8 +448,40 @@ fn setup_link_libraries(target_os: &str, lib_root: &Path) {
             println!("cargo:rustc-link-lib=log");
             println!("cargo:rustc-link-lib=dylib=c++_shared");
         }
+        "macos" => {
+            println!("cargo:rustc-link-search={}", lib_root.join("lib").display());
+            println!("cargo:rustc-link-lib=static=divecomputer");
+            // macOS frameworks for serial/USB
+            println!("cargo:rustc-link-lib=framework=IOKit");
+            println!("cargo:rustc-link-lib=framework=CoreFoundation");
+            // Optional: libusb/hidapi if installed (e.g. via Homebrew)
+            if env::var("LIBUSB_DIR").is_ok() || pkg_config_exists("libusb-1.0") {
+                println!("cargo:rustc-link-lib=usb-1.0");
+            }
+            if env::var("HIDAPI_DIR").is_ok() || pkg_config_exists("hidapi") {
+                println!("cargo:rustc-link-lib=hidapi");
+            }
+        }
+        "ios" => {
+            println!("cargo:rustc-link-search={}", lib_root.join("lib").display());
+            println!("cargo:rustc-link-lib=static=divecomputer");
+            println!("cargo:rustc-link-lib=framework=CoreFoundation");
+        }
+        "windows" => {
+            // cc crate already emits cargo:rustc-link-lib=static=divecomputer
+            // We just need the Windows system libraries
+            println!("cargo:rustc-link-lib=ws2_32");
+            println!("cargo:rustc-link-lib=setupapi");
+        }
         _ => {}
     }
+}
+
+fn pkg_config_exists(lib: &str) -> bool {
+    Command::new("pkg-config")
+        .args(["--exists", lib])
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 fn get_clang_args(target_os: &str, target_arch: &str, lib_root: &Path) -> Vec<String> {
@@ -253,41 +491,49 @@ fn get_clang_args(target_os: &str, target_arch: &str, lib_root: &Path) -> Vec<St
     ];
 
     // Add target-specific clang arguments
-    if target_os == "android" {
-        let ndk_home = env::var("ANDROID_NDK_HOME")
-            .or_else(|_| env::var("NDK_HOME"))
-            .expect("ANDROID_NDK_HOME required for Android");
+    match target_os {
+        "android" => {
+            let ndk_home = env::var("ANDROID_NDK_HOME")
+                .or_else(|_| env::var("NDK_HOME"))
+                .expect("ANDROID_NDK_HOME required for Android");
 
-        let host_tag = if cfg!(target_os = "windows") {
-            "windows-x86_64"
-        } else if cfg!(target_os = "macos") {
-            "darwin-x86_64"
-        } else {
-            "linux-x86_64"
-        };
+            let host_tag = if cfg!(target_os = "windows") {
+                "windows-x86_64"
+            } else if cfg!(target_os = "macos") {
+                "darwin-x86_64"
+            } else {
+                "linux-x86_64"
+            };
 
-        let sysroot = format!("{ndk_home}/toolchains/llvm/prebuilt/{host_tag}/sysroot");
-        args.push(format!("--sysroot={sysroot}"));
+            let sysroot = format!("{ndk_home}/toolchains/llvm/prebuilt/{host_tag}/sysroot");
+            args.push(format!("--sysroot={sysroot}"));
 
-        match target_arch {
-            "aarch64" => {
-                args.push("-target".to_string());
-                args.push("aarch64-linux-android21".to_string());
+            match target_arch {
+                "aarch64" => {
+                    args.push("-target".to_string());
+                    args.push("aarch64-linux-android21".to_string());
+                }
+                "arm" => {
+                    args.push("-target".to_string());
+                    args.push("armv7a-linux-androideabi16".to_string());
+                }
+                "x86_64" => {
+                    args.push("-target".to_string());
+                    args.push("x86_64-linux-android21".to_string());
+                }
+                "x86" => {
+                    args.push("-target".to_string());
+                    args.push("i686-linux-android16".to_string());
+                }
+                _ => {}
             }
-            "arm" => {
-                args.push("-target".to_string());
-                args.push("armv7a-linux-androideabi16".to_string());
-            }
-            "x86_64" => {
-                args.push("-target".to_string());
-                args.push("x86_64-linux-android21".to_string());
-            }
-            "x86" => {
-                args.push("-target".to_string());
-                args.push("i686-linux-android16".to_string());
-            }
-            _ => {}
         }
+        "windows" => {
+            // MSVC uses signed enums by default, but libdivecomputer's Rust wrapper expects
+            // unsigned enum types. Use a Linux target hint so bindgen generates unsigned enums.
+            args.push("--target=x86_64-unknown-linux-gnu".to_string());
+        }
+        _ => {}
     }
 
     args
