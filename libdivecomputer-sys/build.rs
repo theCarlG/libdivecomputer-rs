@@ -45,7 +45,9 @@ fn main() -> std::io::Result<()> {
 
     // Build the library via autotools (skip for Android/Windows which use their own build systems)
     if target_os != "android" && target_os != "windows" {
-        run_command(&libdc_path, "make", &[""]);
+        // Clean stale object files to prevent architecture mismatches during cross-compilation
+        try_run_command(&libdc_path, "make", &["clean"]);
+        run_command(&libdc_path, "make", &[] as &[&str]);
         run_command(&libdc_path, "make", &["install"]);
     }
 
@@ -54,6 +56,35 @@ fn main() -> std::io::Result<()> {
     generate_bindings(&target_os, &target_arch, &lib_root, &out_dir)?;
 
     Ok(())
+}
+
+fn try_run_command<C, P, S>(dir: C, cmd: P, args: &[S])
+where
+    C: AsRef<Path>,
+    P: AsRef<Path>,
+    S: Borrow<str> + AsRef<OsStr>,
+{
+    let cmd_path = cmd.as_ref();
+    let cmd_path = if cmd_path.components().count() > 1 && cmd_path.is_relative() {
+        dir.as_ref()
+            .join(cmd_path)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(cmd_path))
+    } else {
+        PathBuf::from(cmd_path)
+    };
+
+    eprintln!(
+        "Running command (may fail): \"{} {}\" in dir: {}",
+        cmd_path.display(),
+        args.iter().map(|a| a.borrow()).collect::<Vec<&str>>().join(" "),
+        dir.as_ref().display(),
+    );
+
+    let _ = Command::new(cmd_path)
+        .current_dir(dir)
+        .args(args)
+        .status();
 }
 
 fn run_command<C, P, S>(dir: C, cmd: P, args: &[S])
@@ -219,19 +250,66 @@ fn setup_linux_build(libdc_path: &Path, lib_root: &Path) {
 
 fn setup_macos_build(libdc_path: &Path, lib_root: &Path) {
     let prefix = format!("--prefix={}", lib_root.display());
+    let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+
+    // Map Rust arch to Apple arch name and autotools host triple
+    let (apple_arch, host_triple) = match target_arch.as_str() {
+        "aarch64" => ("arm64", "aarch64-apple-darwin"),
+        "x86_64" => ("x86_64", "x86_64-apple-darwin"),
+        _ => panic!("Unsupported macOS architecture: {target_arch}"),
+    };
+
+    let host_arg = format!("--host={host_triple}");
+    let is_cross = is_cross_compiling();
+
+    let mut cflags = format!("-fPIC -O2 -arch {apple_arch}");
+    let ldflags = format!("-fPIC -arch {apple_arch}");
+
+    let mut configure_args = vec![
+        prefix.clone(),
+        "--disable-shared".to_string(),
+        "--enable-static".to_string(),
+        "--disable-examples".to_string(),
+        "--without-bluez".to_string(),
+        host_arg,
+    ];
+
+    let mut env_vars: Vec<(&str, String)> = vec![];
+
+    if is_cross {
+        // When cross-compiling, use LIBUSB_DIR/HIDAPI_DIR if set,
+        // otherwise disable USB/USBHID to avoid linking x86_64 host libs
+        if let Ok(libusb_dir) = env::var("LIBUSB_DIR") {
+            let inc = format!("{libusb_dir}/include");
+            cflags = format!("{cflags} -I{inc}");
+            env_vars.push(("LIBUSB_CFLAGS", format!("-I{inc}/libusb-1.0")));
+            env_vars.push(("LIBUSB_LIBS", format!("-L{libusb_dir}/lib -lusb-1.0")));
+        } else {
+            configure_args.push("--without-libusb".to_string());
+            eprintln!("Warning: cross-compiling without LIBUSB_DIR - disabling USB support");
+        }
+
+        if let Ok(hidapi_dir) = env::var("HIDAPI_DIR") {
+            let inc = format!("{hidapi_dir}/include");
+            cflags = format!("{cflags} -I{inc}");
+            env_vars.push(("HIDAPI_CFLAGS", format!("-I{inc}/hidapi")));
+            env_vars.push(("HIDAPI_LIBS", format!("-L{hidapi_dir}/lib -lhidapi")));
+        } else {
+            configure_args.push("--without-hidapi".to_string());
+            eprintln!("Warning: cross-compiling without HIDAPI_DIR - disabling USBHID support");
+        }
+    }
+
+    // Build env vars slice with required entries plus any cross-compile overrides
+    let mut all_env: Vec<(&str, &str)> = vec![("CFLAGS", &cflags), ("LDFLAGS", &ldflags)];
+    for (k, v) in &env_vars {
+        all_env.push((k, v.as_str()));
+    }
+
+    let configure_args_str: Vec<&str> = configure_args.iter().map(|s| s.as_str()).collect();
 
     // macOS with static build, IOKit serial support auto-detected by configure
-    run_command_with_env(
-        libdc_path,
-        "./configure",
-        &[
-            prefix.as_str(),
-            "--disable-shared",
-            "--enable-static",
-            "--without-bluez",
-        ],
-        &[("CFLAGS", "-fPIC -O2"), ("LDFLAGS", "-fPIC")],
-    );
+    run_command_with_env(libdc_path, "./configure", &configure_args_str, &all_env);
 }
 
 fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
@@ -279,11 +357,15 @@ fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
     .trim()
     .to_string();
 
-    let cflags = format!(
-        "-fPIC -O2 -isysroot {sdk_path} -arch {}",
-        target.split('-').next().unwrap_or("arm64")
-    );
+    let rust_arch = target.split('-').next().unwrap_or("aarch64");
+    let apple_arch = match rust_arch {
+        "aarch64" => "arm64",
+        other => other,
+    };
+    let cflags = format!("-fPIC -O2 -isysroot {sdk_path} -arch {apple_arch}");
     let host_arg = format!("--host={host_triple}");
+
+    let ldflags = format!("-fPIC -isysroot {sdk_path} -arch {apple_arch}");
 
     run_command_with_env(
         libdc_path,
@@ -292,6 +374,7 @@ fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
             prefix.as_str(),
             "--disable-shared",
             "--enable-static",
+            "--disable-examples",
             "--without-libusb",
             "--without-hidapi",
             "--without-bluez",
@@ -300,7 +383,7 @@ fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
         &[
             ("CC", &cc),
             ("CFLAGS", &cflags),
-            ("LDFLAGS", &format!("-fPIC -isysroot {sdk_path}")),
+            ("LDFLAGS", &ldflags),
         ],
     );
 }
@@ -490,12 +573,37 @@ fn setup_link_libraries(target_os: &str, lib_root: &Path) {
             // macOS frameworks for serial/USB
             println!("cargo:rustc-link-lib=framework=IOKit");
             println!("cargo:rustc-link-lib=framework=CoreFoundation");
-            // Optional: libusb/hidapi if installed (e.g. via Homebrew)
-            if env::var("LIBUSB_DIR").is_ok() || pkg_config_exists("libusb-1.0") {
-                println!("cargo:rustc-link-lib=usb-1.0");
+
+            let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap();
+            let is_cross = is_cross_compiling();
+
+            // Only add Homebrew library paths when not cross-compiling,
+            // since Homebrew libs match the host architecture
+            if !is_cross {
+                for prefix in &["/usr/local/lib", "/opt/homebrew/lib"] {
+                    if Path::new(prefix).exists() {
+                        println!("cargo:rustc-link-search=native={prefix}");
+                    }
+                }
             }
-            if env::var("HIDAPI_DIR").is_ok() || pkg_config_exists("hidapi") {
+
+            // Link libusb/hidapi - use explicit DIR env vars when cross-compiling
+            if let Ok(libusb_dir) = env::var("LIBUSB_DIR") {
+                println!("cargo:rustc-link-search=native={}/lib", libusb_dir);
+                println!("cargo:rustc-link-lib=usb-1.0");
+            } else if !is_cross && pkg_config_exists("libusb-1.0") {
+                println!("cargo:rustc-link-lib=usb-1.0");
+            } else if is_cross {
+                eprintln!("Warning: cross-compiling for {target_arch} without LIBUSB_DIR set - USB support may be unavailable at runtime");
+            }
+
+            if let Ok(hidapi_dir) = env::var("HIDAPI_DIR") {
+                println!("cargo:rustc-link-search=native={}/lib", hidapi_dir);
                 println!("cargo:rustc-link-lib=hidapi");
+            } else if !is_cross && pkg_config_exists("hidapi") {
+                println!("cargo:rustc-link-lib=hidapi");
+            } else if is_cross {
+                eprintln!("Warning: cross-compiling for {target_arch} without HIDAPI_DIR set - USBHID support may be unavailable at runtime");
             }
         }
         "ios" => {
@@ -511,6 +619,12 @@ fn setup_link_libraries(target_os: &str, lib_root: &Path) {
         }
         _ => {}
     }
+}
+
+fn is_cross_compiling() -> bool {
+    let target = env::var("TARGET").unwrap_or_default();
+    let host = env::var("HOST").unwrap_or_default();
+    target != host
 }
 
 fn pkg_config_exists(lib: &str) -> bool {
