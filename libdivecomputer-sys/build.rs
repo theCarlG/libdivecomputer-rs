@@ -281,7 +281,7 @@ fn setup_macos_build(libdc_path: &Path, lib_root: &Path) {
         // otherwise disable USB/USBHID to avoid linking x86_64 host libs
         if let Ok(libusb_dir) = env::var("LIBUSB_DIR") {
             let inc = format!("{libusb_dir}/include");
-            cflags = format!("{cflags} -I{inc}");
+            cflags = format!("{cflags} -I{inc} -I{inc}/libusb-1.0");
             env_vars.push(("LIBUSB_CFLAGS", format!("-I{inc}/libusb-1.0")));
             env_vars.push(("LIBUSB_LIBS", format!("-L{libusb_dir}/lib -lusb-1.0")));
         } else {
@@ -291,7 +291,7 @@ fn setup_macos_build(libdc_path: &Path, lib_root: &Path) {
 
         if let Ok(hidapi_dir) = env::var("HIDAPI_DIR") {
             let inc = format!("{hidapi_dir}/include");
-            cflags = format!("{cflags} -I{inc}");
+            cflags = format!("{cflags} -I{inc} -I{inc}/hidapi");
             env_vars.push(("HIDAPI_CFLAGS", format!("-I{inc}/hidapi")));
             env_vars.push(("HIDAPI_LIBS", format!("-L{hidapi_dir}/lib -lhidapi")));
         } else {
