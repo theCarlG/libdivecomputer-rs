@@ -622,6 +622,7 @@ fn setup_link_libraries(target_os: &str, lib_root: &Path) {
             // We just need the Windows system libraries
             println!("cargo:rustc-link-lib=ws2_32");
             println!("cargo:rustc-link-lib=setupapi");
+            println!("cargo:rustc-link-lib=advapi32");
         }
         _ => {}
     }
