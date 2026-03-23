@@ -704,6 +704,11 @@ fn copy_directory(src: &Path, dst: &Path) -> std::io::Result<()> {
         let dst_path = dst.join(entry.file_name());
 
         if src_path.is_dir() {
+            // Skip .git — no need to copy git metadata, and its
+            // read-only pack files cause PermissionDenied on rebuild.
+            if entry.file_name() == ".git" {
+                continue;
+            }
             copy_directory(&src_path, &dst_path)?;
         } else {
             std::fs::copy(&src_path, &dst_path)?;
