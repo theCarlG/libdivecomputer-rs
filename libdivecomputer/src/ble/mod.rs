@@ -391,9 +391,16 @@ impl BleTransport {
         adapter.stop_scan().await?;
 
         let peripherals = adapter.peripherals().await?;
+        let target = mac_address.to_lowercase();
         for peripheral in peripherals {
+            // Match by peripheral ID (needed on iOS where CoreBluetooth uses
+            // opaque UUIDs instead of MAC addresses).
+            if peripheral.id().to_string().to_lowercase() == target {
+                return Ok(peripheral);
+            }
+            // Match by MAC address (Linux/Android).
             if let Some(props) = peripheral.properties().await?
-                && props.address.to_string().to_lowercase() == mac_address.to_lowercase()
+                && props.address.to_string().to_lowercase() == target
             {
                 return Ok(peripheral);
             }
@@ -686,6 +693,13 @@ extern "C" fn ble_ioctl(
     }
 }
 
+/// Maximum number of BLE connection attempts. Retries help with devices that
+/// require a bonding handshake on first connect (e.g. Shearwater).
+const BLE_CONNECT_MAX_ATTEMPTS: u32 = 3;
+
+/// Delay between BLE connection retry attempts.
+const BLE_CONNECT_RETRY_DELAY: Duration = Duration::from_secs(2);
+
 /// Open a BLE iostream for the given MAC address.
 pub fn ble_iostream_open(ctx: &crate::context::Context, mac_address: &str) -> Result<IoStream> {
     #[cfg(target_os = "android")]
@@ -700,49 +714,64 @@ pub fn ble_iostream_open(ctx: &crate::context::Context, mac_address: &str) -> Re
 
     let addr = mac_address.strip_prefix("LE:").unwrap_or(mac_address);
 
-    let transport = rt.block_on(BleTransport::connect(addr))?;
+    // Retry connection to handle BLE pairing/bonding on first connect.
+    // Some devices (notably Shearwater) drop the first connection while
+    // negotiating the bond, but succeed on subsequent attempts.
+    let mut last_err = None;
+    for attempt in 0..BLE_CONNECT_MAX_ATTEMPTS {
+        if attempt > 0 {
+            std::thread::sleep(BLE_CONNECT_RETRY_DELAY);
+        }
+        match rt.block_on(BleTransport::connect(addr)) {
+            Ok(transport) => {
+                let io_ptr = Box::into_raw(Box::new(transport)) as *mut c_void;
 
-    let io_ptr = Box::into_raw(Box::new(transport)) as *mut c_void;
+                let callbacks = ffi::dc_custom_cbs_t {
+                    set_timeout: Some(ble_set_timeout),
+                    set_break: None,
+                    set_dtr: None,
+                    set_rts: None,
+                    get_lines: None,
+                    get_available: None,
+                    configure: None,
+                    poll: Some(ble_poll),
+                    read: Some(ble_read),
+                    write: Some(ble_write),
+                    ioctl: Some(ble_ioctl),
+                    flush: None,
+                    purge: None,
+                    sleep: None,
+                    close: Some(ble_close),
+                };
 
-    let callbacks = ffi::dc_custom_cbs_t {
-        set_timeout: Some(ble_set_timeout),
-        set_break: None,
-        set_dtr: None,
-        set_rts: None,
-        get_lines: None,
-        get_available: None,
-        configure: None,
-        poll: Some(ble_poll),
-        read: Some(ble_read),
-        write: Some(ble_write),
-        ioctl: Some(ble_ioctl),
-        flush: None,
-        purge: None,
-        sleep: None,
-        close: Some(ble_close),
-    };
+                let mut iostream_ptr = ptr::null_mut();
+                let status = unsafe {
+                    ffi::dc_custom_open(
+                        &mut iostream_ptr,
+                        ctx.ptr(),
+                        ffi::DC_TRANSPORT_BLE,
+                        &callbacks,
+                        io_ptr,
+                    )
+                };
 
-    let mut iostream_ptr = ptr::null_mut();
-    let status = unsafe {
-        ffi::dc_custom_open(
-            &mut iostream_ptr,
-            ctx.ptr(),
-            ffi::DC_TRANSPORT_BLE,
-            &callbacks,
-            io_ptr,
-        )
-    };
+                if status != ffi::DC_STATUS_SUCCESS {
+                    unsafe { drop(Box::from_raw(io_ptr as *mut BleTransport)) };
+                    return Err(LibError::status_with_context(
+                        status,
+                        "failed to open BLE iostream",
+                    ));
+                }
 
-    if status != ffi::DC_STATUS_SUCCESS {
-        // Reclaim the transport to avoid a leak.
-        unsafe { drop(Box::from_raw(io_ptr as *mut BleTransport)) };
-        return Err(LibError::status_with_context(
-            status,
-            "failed to open BLE iostream",
-        ));
+                return Ok(IoStream::from_raw(iostream_ptr));
+            }
+            Err(e) => {
+                last_err = Some(e);
+            }
+        }
     }
 
-    Ok(IoStream::from_raw(iostream_ptr))
+    Err(last_err.unwrap_or_else(|| LibError::DeviceError("BLE connection failed".to_string())))
 }
 
 #[cfg(target_os = "android")]
