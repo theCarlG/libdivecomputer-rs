@@ -172,31 +172,44 @@ fn scan_usbhid(ctx: &Context) -> Result<Vec<DeviceInfo>> {
 }
 
 fn scan_bluetooth(ctx: &Context) -> Result<Vec<DeviceInfo>> {
-    scan_with_iterator(
-        |iter| unsafe { ffi::dc_bluetooth_iterator_new(iter, ctx.ptr(), ptr::null_mut()) },
-        |iter, device| unsafe { ffi::dc_iterator_next(iter, device as *mut _ as *mut c_void) },
-        |device| {
-            let address = unsafe { ffi::dc_bluetooth_device_get_address(device) };
-            let name_ptr = unsafe { ffi::dc_bluetooth_device_get_name(device) };
-            let name = if name_ptr.is_null() {
-                "Unknown Bluetooth Device".to_string()
-            } else {
-                unsafe { CStr::from_ptr(name_ptr).to_string_lossy().to_string() }
-            };
-            let address_string = format_bluetooth_address(address);
-            DeviceInfo {
-                name: name.clone(),
-                transport: Transport::Bluetooth,
-                connection: ConnectionInfo::Bluetooth {
-                    address,
-                    address_string,
-                    name,
-                },
-            }
-        },
-        |device| unsafe { ffi::dc_bluetooth_device_free(device) },
-        "Bluetooth",
-    )
+    // On Android, the C library's BlueZ-based scanner is unavailable.
+    // Use JNI to enumerate bonded devices instead.
+    #[cfg(all(target_os = "android", feature = "bluetooth"))]
+    {
+        let _ = ctx; // unused on this path
+        crate::bluetooth::scan_bluetooth_android()
+    }
+
+    #[cfg(not(all(target_os = "android", feature = "bluetooth")))]
+    {
+        scan_with_iterator(
+            |iter| unsafe { ffi::dc_bluetooth_iterator_new(iter, ctx.ptr(), ptr::null_mut()) },
+            |iter, device| unsafe {
+                ffi::dc_iterator_next(iter, device as *mut _ as *mut c_void)
+            },
+            |device| {
+                let address = unsafe { ffi::dc_bluetooth_device_get_address(device) };
+                let name_ptr = unsafe { ffi::dc_bluetooth_device_get_name(device) };
+                let name = if name_ptr.is_null() {
+                    "Unknown Bluetooth Device".to_string()
+                } else {
+                    unsafe { CStr::from_ptr(name_ptr).to_string_lossy().to_string() }
+                };
+                let address_string = format_bluetooth_address(address);
+                DeviceInfo {
+                    name: name.clone(),
+                    transport: Transport::Bluetooth,
+                    connection: ConnectionInfo::Bluetooth {
+                        address,
+                        address_string,
+                        name,
+                    },
+                }
+            },
+            |device| unsafe { ffi::dc_bluetooth_device_free(device) },
+            "Bluetooth",
+        )
+    }
 }
 
 fn scan_irda(ctx: &Context) -> Result<Vec<DeviceInfo>> {

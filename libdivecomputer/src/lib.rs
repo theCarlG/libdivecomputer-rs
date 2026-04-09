@@ -14,8 +14,14 @@ pub mod transport;
 pub mod vendor;
 pub mod version;
 
+#[cfg(target_os = "android")]
+pub mod android;
+
 #[cfg(feature = "ble")]
 pub mod ble;
+
+#[cfg(feature = "bluetooth")]
+pub mod bluetooth;
 
 // Re-exports for convenience.
 pub use common::{EventKind, SampleFlag, SampleKind};

@@ -81,7 +81,24 @@ impl IoStream {
     pub fn open(ctx: &Context, connection: &ConnectionInfo) -> Result<Self> {
         match connection {
             ConnectionInfo::Serial { path, .. } => Self::serial(ctx, path),
-            ConnectionInfo::Bluetooth { address, .. } => Self::bluetooth(ctx, *address, 0),
+            ConnectionInfo::Bluetooth {
+                address,
+                address_string,
+                ..
+            } => {
+                // On Android, the C library's BlueZ-based RFCOMM is unavailable.
+                // Use JNI to open an RFCOMM socket instead.
+                #[cfg(all(target_os = "android", feature = "bluetooth"))]
+                {
+                    let _ = address; // unused on this path
+                    crate::bluetooth::bt_iostream_open(ctx, address_string)
+                }
+                #[cfg(not(all(target_os = "android", feature = "bluetooth")))]
+                {
+                    let _ = address_string; // unused on this path
+                    Self::bluetooth(ctx, *address, 0)
+                }
+            }
             ConnectionInfo::Irda { address, .. } => Self::irda(ctx, *address, 1),
             ConnectionInfo::UsbStorage { path, .. } => Self::usb_storage(ctx, path),
             #[cfg(feature = "ble")]

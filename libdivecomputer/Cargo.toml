@@ -14,8 +14,9 @@ name       = "libdivecomputer"
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = ["ble"]
+default = ["ble", "bluetooth"]
 ble = ["dep:btleplug", "dep:futures", "dep:tokio", "dep:tokio-stream", "dep:uuid"]
+bluetooth = []
 
 [dependencies]
 bitflags            = { version = "2.9", features = ["serde"] }
