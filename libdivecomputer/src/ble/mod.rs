@@ -163,7 +163,13 @@ impl PollManager {
     fn new() -> Self {
         Self {
             pending: Vec::new(),
-            default_timeout: Duration::from_millis(1200),
+            // Generous default for the very first reads on a fresh BLE session,
+            // before libdivecomputer's protocol layer narrows the timeout via
+            // BleEvent::SetTimeout. On a never-bonded Shearwater the host BLE
+            // stack often takes well over a second to deliver the first
+            // notification, and the previous 1200ms default was too tight to
+            // survive that initial window.
+            default_timeout: Duration::from_secs(5),
         }
     }
 
@@ -205,8 +211,23 @@ struct BleTransport {
     device_name: String,
 }
 
+/// Maximum number of attempts at the connect/discover/subscribe portion of
+/// opening a BLE session. The retry loop only re-runs the per-session work,
+/// not the upfront 5-second peripheral scan, so the entire budget is spent on
+/// giving the OS BLE stack room to settle on a fresh device (notably
+/// Shearwater on first connect).
+const BLE_CONNECT_MAX_ATTEMPTS: u32 = 5;
+
+/// Backoff between session-open retry attempts.
+const BLE_CONNECT_RETRY_DELAY: Duration = Duration::from_secs(3);
+
 impl BleTransport {
+    /// Find the peripheral once, then retry only the session-open portion.
+    /// Rescanning on every retry (the previous behavior) ate ~5s of every
+    /// attempt for no benefit.
     async fn connect(mac_address: &str) -> Result<Self> {
+        log::debug!("ble: scanning for peripheral {mac_address}");
+
         let manager = Manager::new().await?;
         let adapters = manager.adapters().await?;
         let adapter = adapters
@@ -222,16 +243,76 @@ impl BleTransport {
             .local_name
             .unwrap_or_else(|| "Unknown".to_string());
 
+        log::debug!("ble: found peripheral {device_name:?}, opening session");
+
+        let mut last_err = None;
+        for attempt in 1..=BLE_CONNECT_MAX_ATTEMPTS {
+            if attempt > 1 {
+                log::debug!(
+                    "ble: retry attempt {attempt}/{BLE_CONNECT_MAX_ATTEMPTS} after {:?}",
+                    BLE_CONNECT_RETRY_DELAY
+                );
+                tokio::time::sleep(BLE_CONNECT_RETRY_DELAY).await;
+            }
+            match Self::open_session(&peripheral, device_name.clone(), attempt).await {
+                Ok(transport) => return Ok(transport),
+                Err(err) => {
+                    log::warn!(
+                        "ble: session open attempt {attempt}/{BLE_CONNECT_MAX_ATTEMPTS} failed: {err}"
+                    );
+                    last_err = Some(err);
+                    // Make sure we are fully disconnected before the next
+                    // attempt so the OS stack can fully reset its bond state.
+                    let _ = peripheral.disconnect().await;
+                }
+            }
+        }
+
+        Err(last_err
+            .unwrap_or_else(|| LibError::DeviceError("BLE session open failed".to_string())))
+    }
+
+    /// One pass at connect → discover services → subscribe → spawn event loop.
+    /// Called from the retry loop in [`Self::connect`].
+    async fn open_session(
+        peripheral: &Peripheral,
+        device_name: String,
+        attempt: u32,
+    ) -> Result<Self> {
+        let started = Instant::now();
+        log::debug!("ble: attempt {attempt}: connecting");
         peripheral.connect().await?;
+
+        log::debug!("ble: attempt {attempt}: discovering services");
         peripheral.discover_services().await?;
 
         let (service, write_char, read_char) =
-            Self::find_preferred_service_and_characteristics(&peripheral).await?;
+            Self::find_preferred_service_and_characteristics(peripheral).await?;
 
-        peripheral.subscribe(&read_char).await?;
-
+        // IMPORTANT: get the notification stream BEFORE enabling the GATT
+        // subscription. If we subscribe first, any notification that arrives
+        // in the window before we obtain the stream can be dropped on backends
+        // whose internal channel buffers nothing for a zero-subscriber
+        // broadcast — which is exactly the kind of single-packet loss that can
+        // wedge a Shearwater first-sync handshake.
         let (event_tx, event_rx) = mpsc::unbounded_channel::<BleEvent>();
         let notification_stream = peripheral.notifications().await?;
+
+        log::debug!("ble: attempt {attempt}: subscribing to notifications");
+        peripheral.subscribe(&read_char).await?;
+
+        // Let the CCCD descriptor write fully complete before the first
+        // protocol command goes out. Cheap; only matters on the first session
+        // for a given physical connection.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        log::debug!(
+            "ble: attempt {attempt}: session ready in {:?}",
+            started.elapsed()
+        );
+
+        // Clone what the spawned thread needs.
+        let peripheral_owned = peripheral.clone();
 
         // Spawn the event loop on a dedicated thread with its own runtime.
         std::thread::spawn(move || {
@@ -246,7 +327,7 @@ impl BleTransport {
 
             rt.block_on(Self::event_loop(
                 service,
-                peripheral,
+                peripheral_owned,
                 event_rx,
                 notification_stream,
                 write_char,
@@ -381,34 +462,86 @@ impl BleTransport {
     }
 
     async fn find_peripheral(adapter: &Adapter, mac_address: &str) -> Result<Peripheral> {
+        let target = mac_address.to_lowercase();
+
+        // Tier 1: cached peripherals already known to this Manager session.
+        // After the first sync of a process this is enough to avoid the
+        // 5-second scan; on droidplug the GLOBAL_ADAPTER persists peripherals
+        // across calls within the same process.
+        if let Ok(peripherals) = adapter.peripherals().await {
+            for peripheral in peripherals {
+                if Self::peripheral_matches(&peripheral, &target).await {
+                    log::debug!(
+                        "ble: {mac_address} resolved via cached peripheral lookup (no scan)"
+                    );
+                    return Ok(peripheral);
+                }
+            }
+        }
+
+        // Tier 2: Android-only direct lookup by MAC. Wraps
+        // BluetoothAdapter.getRemoteDevice(addr), which manufactures a
+        // connectable peripheral handle without scanning and without needing
+        // the device to be currently advertising. This is the path that
+        // bypasses Shearwater's "stops advertising when it sees its previous
+        // peer phone" radio behavior. Requires the local btleplug fork that
+        // exposes `From<BDAddr>` for the droidplug PeripheralId.
+        #[cfg(target_os = "android")]
+        if let Ok(addr) = mac_address.parse::<btleplug::api::BDAddr>() {
+            let id: btleplug::platform::PeripheralId = addr.into();
+            match adapter.add_peripheral(&id).await {
+                Ok(peripheral) => {
+                    log::debug!(
+                        "ble: {mac_address} resolved via add_peripheral (no scan, no advertising required)"
+                    );
+                    return Ok(peripheral);
+                }
+                Err(err) => {
+                    log::debug!(
+                        "ble: add_peripheral({mac_address}) failed: {err}; falling back to scan"
+                    );
+                }
+            }
+        }
+
+        // Tier 3: existing 5-second active scan. Required for cold-start
+        // discovery on backends that don't support direct add_peripheral
+        // (BlueZ, CoreBluetooth) and as a safety net on Android.
+        log::debug!("ble: cached lookup failed for {mac_address}, falling back to 5s active scan");
         let known_uuids: Vec<Uuid> = KNOWN_SERVICES.iter().map(|(uuid, _)| *uuid).collect();
         let scan_filter = ScanFilter {
             services: known_uuids,
         };
-
         adapter.start_scan(scan_filter).await?;
         tokio::time::sleep(Duration::from_secs(5)).await;
         adapter.stop_scan().await?;
 
         let peripherals = adapter.peripherals().await?;
-        let target = mac_address.to_lowercase();
         for peripheral in peripherals {
-            // Match by peripheral ID (needed on iOS where CoreBluetooth uses
-            // opaque UUIDs instead of MAC addresses).
-            if peripheral.id().to_string().to_lowercase() == target {
-                return Ok(peripheral);
-            }
-            // Match by MAC address (Linux/Android).
-            if let Some(props) = peripheral.properties().await?
-                && props.address.to_string().to_lowercase() == target
-            {
+            if Self::peripheral_matches(&peripheral, &target).await {
                 return Ok(peripheral);
             }
         }
 
         Err(LibError::BleDeviceNotFound(format!(
-            "device {mac_address} not found after 5s scan"
+            "device {mac_address} not found after cached lookup and 5s scan"
         )))
+    }
+
+    /// Match a [`Peripheral`] against a lowercase target MAC/id string,
+    /// trying both the platform peripheral id (needed on iOS where
+    /// CoreBluetooth uses opaque UUIDs instead of MAC addresses) and the
+    /// underlying BD address advertised in `properties()` (Linux/Android).
+    async fn peripheral_matches(peripheral: &Peripheral, target: &str) -> bool {
+        if peripheral.id().to_string().to_lowercase() == target {
+            return true;
+        }
+        if let Ok(Some(props)) = peripheral.properties().await
+            && props.address.to_string().to_lowercase() == target
+        {
+            return true;
+        }
+        false
     }
 
     async fn find_preferred_service_and_characteristics(
@@ -693,14 +826,9 @@ extern "C" fn ble_ioctl(
     }
 }
 
-/// Maximum number of BLE connection attempts. Retries help with devices that
-/// require a bonding handshake on first connect (e.g. Shearwater).
-const BLE_CONNECT_MAX_ATTEMPTS: u32 = 3;
-
-/// Delay between BLE connection retry attempts.
-const BLE_CONNECT_RETRY_DELAY: Duration = Duration::from_secs(2);
-
-/// Open a BLE iostream for the given MAC address.
+/// Open a BLE iostream for the given MAC address. The retry-on-first-connect
+/// behavior lives inside [`BleTransport::connect`] so that retries don't waste
+/// time re-running the upfront peripheral scan.
 pub fn ble_iostream_open(ctx: &crate::context::Context, mac_address: &str) -> Result<IoStream> {
     #[cfg(target_os = "android")]
     let _jni_guard = android::attach_current_thread()
@@ -714,64 +842,47 @@ pub fn ble_iostream_open(ctx: &crate::context::Context, mac_address: &str) -> Re
 
     let addr = mac_address.strip_prefix("LE:").unwrap_or(mac_address);
 
-    // Retry connection to handle BLE pairing/bonding on first connect.
-    // Some devices (notably Shearwater) drop the first connection while
-    // negotiating the bond, but succeed on subsequent attempts.
-    let mut last_err = None;
-    for attempt in 0..BLE_CONNECT_MAX_ATTEMPTS {
-        if attempt > 0 {
-            std::thread::sleep(BLE_CONNECT_RETRY_DELAY);
-        }
-        match rt.block_on(BleTransport::connect(addr)) {
-            Ok(transport) => {
-                let io_ptr = Box::into_raw(Box::new(transport)) as *mut c_void;
+    let transport = rt.block_on(BleTransport::connect(addr))?;
+    let io_ptr = Box::into_raw(Box::new(transport)) as *mut c_void;
 
-                let callbacks = ffi::dc_custom_cbs_t {
-                    set_timeout: Some(ble_set_timeout),
-                    set_break: None,
-                    set_dtr: None,
-                    set_rts: None,
-                    get_lines: None,
-                    get_available: None,
-                    configure: None,
-                    poll: Some(ble_poll),
-                    read: Some(ble_read),
-                    write: Some(ble_write),
-                    ioctl: Some(ble_ioctl),
-                    flush: None,
-                    purge: None,
-                    sleep: None,
-                    close: Some(ble_close),
-                };
+    let callbacks = ffi::dc_custom_cbs_t {
+        set_timeout: Some(ble_set_timeout),
+        set_break: None,
+        set_dtr: None,
+        set_rts: None,
+        get_lines: None,
+        get_available: None,
+        configure: None,
+        poll: Some(ble_poll),
+        read: Some(ble_read),
+        write: Some(ble_write),
+        ioctl: Some(ble_ioctl),
+        flush: None,
+        purge: None,
+        sleep: None,
+        close: Some(ble_close),
+    };
 
-                let mut iostream_ptr = ptr::null_mut();
-                let status = unsafe {
-                    ffi::dc_custom_open(
-                        &mut iostream_ptr,
-                        ctx.ptr(),
-                        ffi::DC_TRANSPORT_BLE,
-                        &callbacks,
-                        io_ptr,
-                    )
-                };
+    let mut iostream_ptr = ptr::null_mut();
+    let status = unsafe {
+        ffi::dc_custom_open(
+            &mut iostream_ptr,
+            ctx.ptr(),
+            ffi::DC_TRANSPORT_BLE,
+            &callbacks,
+            io_ptr,
+        )
+    };
 
-                if status != ffi::DC_STATUS_SUCCESS {
-                    unsafe { drop(Box::from_raw(io_ptr as *mut BleTransport)) };
-                    return Err(LibError::status_with_context(
-                        status,
-                        "failed to open BLE iostream",
-                    ));
-                }
-
-                return Ok(IoStream::from_raw(iostream_ptr));
-            }
-            Err(e) => {
-                last_err = Some(e);
-            }
-        }
+    if status != ffi::DC_STATUS_SUCCESS {
+        unsafe { drop(Box::from_raw(io_ptr as *mut BleTransport)) };
+        return Err(LibError::status_with_context(
+            status,
+            "failed to open BLE iostream",
+        ));
     }
 
-    Err(last_err.unwrap_or_else(|| LibError::DeviceError("BLE connection failed".to_string())))
+    Ok(IoStream::from_raw(iostream_ptr))
 }
 
 #[cfg(target_os = "android")]

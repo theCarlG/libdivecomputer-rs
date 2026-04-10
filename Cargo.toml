@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = [
-    "libdivecomputer",
-    "libdivecomputer-sys",
-]
+members  = ["libdivecomputer", "libdivecomputer-sys"]
+
+[patch.crates-io]
+# Fork that exposes a public From<BDAddr> for droidplug's PeripheralId,
+# so we can construct one from a stored MAC and reach
+# Central::add_peripheral without first having to scan. Branch
+# cg/peripheral-id-from-mac off the upstream 0.12.0 tag.
+btleplug = { git = "https://forgejo.in.carlg.tech/cg/btleplug.git", branch = "cg/peripheral-id-from-mac" }
