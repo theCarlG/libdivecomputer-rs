@@ -1,4 +1,4 @@
-use std::ffi::{CStr, c_void};
+use std::ffi::{CStr, c_char, c_void};
 use std::ptr;
 use std::time::Duration;
 
@@ -6,8 +6,20 @@ use libdivecomputer_sys as ffi;
 
 use crate::context::Context;
 use crate::device::{ConnectionInfo, DeviceInfo};
-use crate::error::{LibError, Result};
+#[cfg(not(feature = "ble"))]
+use crate::error::LibError;
+use crate::error::Result;
+use crate::status::Status;
 use crate::transport::Transport;
+
+/// Read a C string pointer into a `String`, returning `default` if NULL.
+fn cstr_or_default(ptr: *const c_char, default: &str) -> String {
+    if ptr.is_null() {
+        default.to_string()
+    } else {
+        unsafe { CStr::from_ptr(ptr).to_string_lossy().into_owned() }
+    }
+}
 
 /// Builder for scanning for dive computer devices.
 pub struct ScanBuilder<'a> {
@@ -73,24 +85,23 @@ where
 {
     let mut iterator = ptr::null_mut();
     let status = create(&mut iterator);
-    if status != ffi::DC_STATUS_SUCCESS {
-        return Err(LibError::status_with_context(
-            status,
-            format!("failed to create {transport_name} iterator"),
-        ));
-    }
+    Status::check(
+        status,
+        &format!("failed to create {transport_name} iterator"),
+    )?;
 
     let mut devices = Vec::new();
-
-    loop {
+    let result = loop {
         let mut device: *mut T = ptr::null_mut();
         let status = next(iterator, &mut device);
 
-        if status == ffi::DC_STATUS_DONE {
-            break;
-        }
-        if status != ffi::DC_STATUS_SUCCESS {
-            break;
+        match Status::check_done(
+            status,
+            &format!("failed to iterate {transport_name} devices"),
+        ) {
+            Ok(true) => {}
+            Ok(false) => break Ok(()),
+            Err(e) => break Err(e),
         }
         if device.is_null() {
             continue;
@@ -98,10 +109,10 @@ where
 
         devices.push(extract(device));
         free(device);
-    }
+    };
 
     unsafe { ffi::dc_iterator_free(iterator) };
-    Ok(devices)
+    result.map(|()| devices)
 }
 
 fn scan_serial(ctx: &Context) -> Result<Vec<DeviceInfo>> {
@@ -109,12 +120,7 @@ fn scan_serial(ctx: &Context) -> Result<Vec<DeviceInfo>> {
         |iter| unsafe { ffi::dc_serial_iterator_new(iter, ctx.ptr(), ptr::null_mut()) },
         |iter, device| unsafe { ffi::dc_iterator_next(iter, device as *mut _ as *mut c_void) },
         |device| {
-            let name_ptr = unsafe { ffi::dc_serial_device_get_name(device) };
-            let path = if name_ptr.is_null() {
-                "Unknown".to_string()
-            } else {
-                unsafe { CStr::from_ptr(name_ptr).to_string_lossy().to_string() }
-            };
+            let path = cstr_or_default(unsafe { ffi::dc_serial_device_get_name(device) }, "Unknown");
             let name = extract_device_name(&path);
             DeviceInfo {
                 name: name.clone(),
@@ -189,12 +195,10 @@ fn scan_bluetooth(ctx: &Context) -> Result<Vec<DeviceInfo>> {
             },
             |device| {
                 let address = unsafe { ffi::dc_bluetooth_device_get_address(device) };
-                let name_ptr = unsafe { ffi::dc_bluetooth_device_get_name(device) };
-                let name = if name_ptr.is_null() {
-                    "Unknown Bluetooth Device".to_string()
-                } else {
-                    unsafe { CStr::from_ptr(name_ptr).to_string_lossy().to_string() }
-                };
+                let name = cstr_or_default(
+                    unsafe { ffi::dc_bluetooth_device_get_name(device) },
+                    "Unknown Bluetooth Device",
+                );
                 let address_string = format_bluetooth_address(address);
                 DeviceInfo {
                     name: name.clone(),
@@ -218,12 +222,10 @@ fn scan_irda(ctx: &Context) -> Result<Vec<DeviceInfo>> {
         |iter, device| unsafe { ffi::dc_iterator_next(iter, device as *mut _ as *mut c_void) },
         |device| {
             let address = unsafe { ffi::dc_irda_device_get_address(device) };
-            let name_ptr = unsafe { ffi::dc_irda_device_get_name(device) };
-            let name = if name_ptr.is_null() {
-                "Unknown IrDA Device".to_string()
-            } else {
-                unsafe { CStr::from_ptr(name_ptr).to_string_lossy().to_string() }
-            };
+            let name = cstr_or_default(
+                unsafe { ffi::dc_irda_device_get_name(device) },
+                "Unknown IrDA Device",
+            );
             DeviceInfo {
                 name: name.clone(),
                 transport: Transport::Irda,

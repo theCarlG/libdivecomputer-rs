@@ -221,6 +221,25 @@ const BLE_CONNECT_MAX_ATTEMPTS: u32 = 5;
 /// Backoff between session-open retry attempts.
 const BLE_CONNECT_RETRY_DELAY: Duration = Duration::from_secs(3);
 
+/// Cap on unread notifications queued in the event loop. Under normal operation
+/// reads drain the queue faster than notifications arrive, so this is purely a
+/// safety net against runaway memory growth if the protocol layer stops
+/// consuming for any reason. With typical BLE MTU (~20-244 bytes), 1024 packets
+/// is at most a few hundred KB.
+const MAX_BUFFERED_PACKETS: usize = 1024;
+
+/// Push a packet onto the buffer, dropping the oldest if the cap is hit. The
+/// drop is loud on purpose — in a well-behaved session we never hit this.
+fn buffer_push(buffer: &mut VecDeque<Vec<u8>>, packet: Vec<u8>) {
+    if buffer.len() >= MAX_BUFFERED_PACKETS {
+        log::warn!(
+            "ble: received-packet buffer at cap ({MAX_BUFFERED_PACKETS}); dropping oldest packet"
+        );
+        buffer.pop_front();
+    }
+    buffer.push_back(packet);
+}
+
 impl BleTransport {
     /// Find the peripheral once, then retry only the session-open portion.
     /// Rescanning on every retry (the previous behavior) ate ~5s of every
@@ -314,16 +333,41 @@ impl BleTransport {
         // Clone what the spawned thread needs.
         let peripheral_owned = peripheral.clone();
 
-        // Spawn the event loop on a dedicated thread with its own runtime.
+        // Startup handshake: the spawned thread must confirm it attached JNI
+        // and built its runtime before we hand a `BleTransport` back to the
+        // caller. Without this, a JNI/tokio failure inside the thread would
+        // leave `event_tx` orphaned and every subsequent FFI call would block
+        // on a oneshot whose sender was dropped.
+        let (startup_tx, startup_rx) = oneshot::channel::<Result<()>>();
+
         std::thread::spawn(move || {
             #[cfg(target_os = "android")]
-            let _jni_guard = android::attach_current_thread()
-                .expect("Failed to attach JNI to BLE event loop thread");
+            let _jni_guard = match android::attach_current_thread() {
+                Ok(g) => g,
+                Err(e) => {
+                    let _ = startup_tx
+                        .send(Err(LibError::DeviceError(format!("JNI attach failed: {e}"))));
+                    return;
+                }
+            };
 
-            let rt = tokio::runtime::Builder::new_current_thread()
+            let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .expect("Failed to create BLE runtime");
+            {
+                Ok(rt) => rt,
+                Err(e) => {
+                    let _ = startup_tx.send(Err(LibError::DeviceError(format!(
+                        "failed to build BLE runtime: {e}"
+                    ))));
+                    return;
+                }
+            };
+
+            if startup_tx.send(Ok(())).is_err() {
+                // Parent already gave up waiting — nothing more to do.
+                return;
+            }
 
             rt.block_on(Self::event_loop(
                 service,
@@ -333,6 +377,16 @@ impl BleTransport {
                 write_char,
             ));
         });
+
+        match startup_rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(e),
+            Err(_) => {
+                return Err(LibError::DeviceError(
+                    "BLE event loop thread exited before signalling startup".to_string(),
+                ));
+            }
+        }
 
         Ok(Self {
             event_tx,
@@ -360,11 +414,11 @@ impl BleTransport {
                         } else {
                             let mut packet = value;
                             let remainder = packet.split_off(size);
-                            received_packets.push_back(remainder);
+                            buffer_push(&mut received_packets, remainder);
                             let _ = response.send(Ok(packet));
                         }
                     } else {
-                        received_packets.push_back(value);
+                        buffer_push(&mut received_packets, value);
                     }
                     poll_manager.notify_all();
                 },

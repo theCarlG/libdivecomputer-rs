@@ -9,18 +9,30 @@ use libdivecomputer_sys as ffi;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    common::ffi_guard,
     error::{LibError, Result},
     status::Status,
     transport::TransportSet,
 };
 
-type LogCallback = Box<dyn Fn(LogLevel, &str) + Send + Sync>;
+type LogCallback = dyn Fn(LogLevel, &str) + Send + Sync;
+
+/// Named wrapper so the FFI `*mut c_void` userdata is a thin pointer, and the
+/// intent of the double-box is spelled out in the type system instead of
+/// hidden behind `Box<Box<dyn ...>>`.
+#[repr(transparent)]
+struct LogCallbackHandle(Box<LogCallback>);
 
 /// Wrapper around `dc_context_t`.
+///
+/// Field drop order matters: `ptr` is declared first, so it is dropped first
+/// (calling `dc_context_free` and detaching any log callback in the C
+/// library), and only then is `_log_callback` dropped. Reversing the order
+/// would let the C library call a freed closure during context teardown.
 pub struct Context {
     pub(crate) ptr: *mut ffi::dc_context_t,
     /// Stored so the closure is freed on drop.
-    _log_callback: Option<Box<LogCallback>>,
+    _log_callback: Option<Box<LogCallbackHandle>>,
 }
 
 impl Context {
@@ -55,13 +67,15 @@ impl Context {
     where
         F: Fn(LogLevel, &str) + Send + Sync + 'static,
     {
-        // Double-box: Box<dyn Fn> is a fat pointer, but we need a thin *mut c_void
-        // for the C callback. Box<Box<dyn Fn>> gives us a thin pointer.
-        let boxed: LogCallback = Box::new(callback);
-        let raw = Box::into_raw(Box::new(boxed));
+        self.set_logfunc_boxed(Box::new(callback))
+    }
+
+    fn set_logfunc_boxed(&mut self, callback: Box<LogCallback>) -> Result<()> {
+        let handle = Box::new(LogCallbackHandle(callback));
+        let raw = Box::into_raw(handle);
 
         let status = unsafe {
-            ffi::dc_context_set_logfunc(self.ptr, Some(log_callback_wrapper), raw as *mut _)
+            ffi::dc_context_set_logfunc(self.ptr, Some(log_callback_wrapper), raw.cast())
         };
 
         if status != ffi::DC_STATUS_SUCCESS {
@@ -73,7 +87,8 @@ impl Context {
             ));
         }
 
-        // Keep the double-boxed pointer alive — C holds `raw` as userdata.
+        // Keep the handle alive — C holds `raw` as userdata until the context
+        // is freed (or another call replaces it).
         self._log_callback = Some(unsafe { Box::from_raw(raw) });
 
         Ok(())
@@ -116,7 +131,7 @@ unsafe impl Sync for Context {}
 #[derive(Default)]
 pub struct ContextBuilder {
     log_level: Option<LogLevel>,
-    log_fn: Option<LogCallback>,
+    log_fn: Option<Box<LogCallback>>,
 }
 
 impl std::fmt::Debug for ContextBuilder {
@@ -150,7 +165,7 @@ impl ContextBuilder {
         }
 
         if let Some(callback) = self.log_fn {
-            ctx.set_logfunc(callback)?;
+            ctx.set_logfunc_boxed(callback)?;
         }
 
         Ok(ctx)
@@ -181,6 +196,31 @@ impl Display for LogLevel {
             Self::All => write!(f, "All"),
         }
     }
+}
+
+extern "C" fn log_callback_wrapper(
+    _context: *mut ffi::dc_context_t,
+    loglevel: ffi::dc_loglevel_t,
+    _file: *const c_char,
+    _line: c_uint,
+    _function: *const c_char,
+    message: *const c_char,
+    userdata: *mut c_void,
+) {
+    ffi_guard(|| unsafe {
+        let handle = &*(userdata as *const LogCallbackHandle);
+        let level = match loglevel {
+            ffi::DC_LOGLEVEL_ERROR => LogLevel::Error,
+            ffi::DC_LOGLEVEL_WARNING => LogLevel::Warning,
+            ffi::DC_LOGLEVEL_INFO => LogLevel::Info,
+            ffi::DC_LOGLEVEL_DEBUG => LogLevel::Debug,
+            _ => LogLevel::None,
+        };
+
+        if let Ok(msg) = CStr::from_ptr(message).to_str() {
+            (handle.0)(level, msg);
+        }
+    })
 }
 
 #[cfg(test)]
@@ -222,29 +262,4 @@ mod tests {
         // On a real system, at least serial should be available
         let _ = transports.to_vec();
     }
-}
-
-extern "C" fn log_callback_wrapper(
-    _context: *mut ffi::dc_context_t,
-    loglevel: ffi::dc_loglevel_t,
-    _file: *const c_char,
-    _line: c_uint,
-    _function: *const c_char,
-    message: *const c_char,
-    userdata: *mut c_void,
-) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
-        let callback = &*(userdata as *const Box<dyn Fn(LogLevel, &str) + Send + Sync>);
-        let level = match loglevel {
-            ffi::DC_LOGLEVEL_ERROR => LogLevel::Error,
-            ffi::DC_LOGLEVEL_WARNING => LogLevel::Warning,
-            ffi::DC_LOGLEVEL_INFO => LogLevel::Info,
-            ffi::DC_LOGLEVEL_DEBUG => LogLevel::Debug,
-            _ => LogLevel::None,
-        };
-
-        if let Ok(msg) = CStr::from_ptr(message).to_str() {
-            callback(level, msg);
-        }
-    }));
 }

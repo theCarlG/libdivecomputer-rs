@@ -1,4 +1,5 @@
 use std::ffi::c_void;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use bitflags::bitflags;
 use libdivecomputer_sys as ffi;
@@ -18,6 +19,22 @@ pub(crate) fn as_void_ptr<T>(r: &mut T) -> *mut c_void {
 #[inline]
 pub(crate) unsafe fn from_void_ptr<'a, T>(ptr: *mut c_void) -> &'a mut T {
     unsafe { &mut *(ptr as *mut T) }
+}
+
+/// Run `f` inside a panic guard, returning `R::default()` if it unwinds.
+///
+/// Used at every `extern "C"` boundary: unwinding into C is undefined
+/// behaviour, so any user-supplied closure we call must have its panics
+/// swallowed. `AssertUnwindSafe` is appropriate here because the callback
+/// closure is the only thing being caught — there is no shared state that
+/// could be observed in a broken state by a later Rust caller.
+#[inline]
+pub(crate) fn ffi_guard<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R,
+    R: Default,
+{
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_default()
 }
 
 #[repr(u32)]

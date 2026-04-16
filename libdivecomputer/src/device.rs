@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     buffer::Buffer,
-    common::{as_void_ptr, from_void_ptr},
+    common::{as_void_ptr, ffi_guard, from_void_ptr},
     context::Context,
     descriptor::Descriptor,
     error::{LibError, Result},
@@ -365,15 +365,17 @@ impl DownloadResult {
     /// Consume this result, returning the dives if successful, the first error if no dives
     /// were parsed, or a `PartialDownload` error if some dives succeeded but errors occurred.
     pub fn into_result(self) -> Result<Vec<Dive>> {
-        if self.errors.is_empty() {
-            Ok(self.dives)
-        } else if self.dives.is_empty() {
-            Err(self.errors.into_iter().next().unwrap())
-        } else {
-            Err(LibError::PartialDownload {
+        match (self.dives.is_empty(), self.errors.is_empty()) {
+            (_, true) => Ok(self.dives),
+            (true, false) => {
+                let mut errors = self.errors;
+                // Safe: !errors.is_empty() was just checked.
+                Err(errors.swap_remove(0))
+            }
+            (false, false) => Err(LibError::PartialDownload {
                 dives: self.dives,
                 errors: self.errors,
-            })
+            }),
         }
     }
 }
@@ -402,7 +404,7 @@ extern "C" fn event_callback(
     data: *const c_void,
     userdata: *mut c_void,
 ) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    ffi_guard(|| {
         let foreach_data = unsafe { from_void_ptr::<ForeachData>(userdata) };
 
         let device_event = match event {
@@ -443,7 +445,7 @@ extern "C" fn event_callback(
         if let Some(ref mut cb) = foreach_data.event_cb {
             cb(device_event);
         }
-    }));
+    })
 }
 
 extern "C" fn dive_callback(
@@ -453,32 +455,26 @@ extern "C" fn dive_callback(
     fsize: c_uint,
     userdata: *mut c_void,
 ) -> c_int {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    ffi_guard(|| {
         let foreach_data = unsafe { from_void_ptr::<ForeachData>(userdata) };
 
         let data_slice = unsafe { std::slice::from_raw_parts(data, size as usize) };
         let fp_slice = unsafe { std::slice::from_raw_parts(fingerprint, fsize as usize) };
         let fp = Fingerprint::from(fp_slice);
 
-        if (foreach_data.dive_cb)(data_slice, &fp) {
-            1
-        } else {
-            0
-        }
-    }));
-    result.unwrap_or_default()
+        c_int::from((foreach_data.dive_cb)(data_slice, &fp))
+    })
 }
 
 extern "C" fn cancel_callback(userdata: *mut c_void) -> c_int {
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    ffi_guard(|| {
         let foreach_data = unsafe { from_void_ptr::<ForeachData>(userdata) };
-        if let Some(ref cb) = foreach_data.cancel_cb {
-            if cb() { 1 } else { 0 }
-        } else {
-            0
-        }
-    }));
-    result.unwrap_or_default()
+        foreach_data
+            .cancel_cb
+            .as_ref()
+            .map(|cb| c_int::from(cb()))
+            .unwrap_or_default()
+    })
 }
 
 /// Convert a hex string to bytes.

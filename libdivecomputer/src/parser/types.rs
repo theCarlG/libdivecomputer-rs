@@ -47,23 +47,31 @@ impl Fingerprint {
 
     /// Parse a hex string into a fingerprint.
     ///
-    /// Returns an error if the string has odd length or contains non-hex characters.
+    /// Returns an error if the string has odd length or contains non-ASCII-hex
+    /// characters. Non-ASCII input is rejected rather than panicking on byte
+    /// indexing.
     pub fn from_hex(hex: &str) -> Result<Self, LibError> {
-        if !hex.len().is_multiple_of(2) {
+        let bytes = hex.as_bytes();
+        if !bytes.len().is_multiple_of(2) {
             return Err(LibError::InvalidArguments(
                 "hex string must have even length".into(),
             ));
         }
-        let data = (0..hex.len())
-            .step_by(2)
-            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16))
+        let data = bytes
+            .chunks_exact(2)
+            .map(|pair| {
+                let s = std::str::from_utf8(pair).map_err(|_| {
+                    LibError::InvalidArguments("hex string contains non-ASCII bytes".into())
+                })?;
+                u8::from_str_radix(s, 16).map_err(LibError::from)
+            })
             .collect::<Result<Vec<u8>, _>>()?;
         Ok(Self { data })
     }
 
     /// Convert the fingerprint to a hex string.
     pub fn to_hex(&self) -> String {
-        self.data.iter().map(|b| format!("{b:02X}")).collect()
+        self.to_string()
     }
 }
 
@@ -107,13 +115,16 @@ impl From<Vec<u8>> for Fingerprint {
 
 impl fmt::Display for Fingerprint {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.to_hex())
+        for b in &self.data {
+            write!(f, "{b:02X}")?;
+        }
+        Ok(())
     }
 }
 
 impl fmt::Debug for Fingerprint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Fingerprint(0x{})", self.to_hex())
+        write!(f, "Fingerprint(0x{self})")
     }
 }
 

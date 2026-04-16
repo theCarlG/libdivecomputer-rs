@@ -228,10 +228,10 @@ impl IoStream {
         match status {
             ffi::DC_STATUS_SUCCESS => Ok(true),
             ffi::DC_STATUS_TIMEOUT => Ok(false),
-            _ => {
-                Status::check(status, "failed to poll iostream")?;
-                Ok(false) // unreachable: check() always returns Err for non-success
-            }
+            _ => Err(LibError::status_with_context(
+                status,
+                "failed to poll iostream",
+            )),
         }
     }
 
@@ -284,16 +284,7 @@ impl IoStream {
     /// Get the transport type of this iostream.
     pub fn transport(&self) -> Transport {
         let raw = unsafe { ffi::dc_iostream_get_transport(self.ptr) };
-        match raw {
-            ffi::DC_TRANSPORT_SERIAL => Transport::Serial,
-            ffi::DC_TRANSPORT_USB => Transport::Usb,
-            ffi::DC_TRANSPORT_USBHID => Transport::UsbHid,
-            ffi::DC_TRANSPORT_IRDA => Transport::Irda,
-            ffi::DC_TRANSPORT_BLUETOOTH => Transport::Bluetooth,
-            ffi::DC_TRANSPORT_BLE => Transport::Ble,
-            ffi::DC_TRANSPORT_USBSTORAGE => Transport::UsbStorage,
-            _ => Transport::Serial, // fallback
-        }
+        Transport::try_from(raw).unwrap_or(Transport::Serial)
     }
 
     /// Perform a transport-specific ioctl request.

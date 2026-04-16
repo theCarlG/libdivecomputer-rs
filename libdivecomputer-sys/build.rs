@@ -25,10 +25,8 @@ fn main() -> std::io::Result<()> {
     copy_directory(Path::new("libdivecomputer"), &libdc_path)?;
 
     // Windows doesn't have autotools — skip autoreconf/configure/make entirely
-    if target_os != "windows" {
-        if !std::fs::exists(libdc_path.join("configure"))? {
-            run_command(&libdc_path, "autoreconf", &["--install"]);
-        }
+    if target_os != "windows" && !std::fs::exists(libdc_path.join("configure"))? {
+        run_command(&libdc_path, "autoreconf", &["--install"]);
     }
 
     match target_os.as_str() {
@@ -722,10 +720,10 @@ fn copy_directory(src: &Path, dst: &Path) -> std::io::Result<()> {
 fn setup_xbuild_environment(target: &str, target_os: &str) {
     println!("cargo:rustc-env=XBUILD_TARGET={target}");
 
-    if target_os == "android" {
-        if let Ok(ndk_home) = env::var("ANDROID_NDK_HOME") {
-            println!("cargo:rustc-env=XBUILD_ANDROID_NDK={ndk_home}");
-        }
+    if target_os == "android"
+        && let Ok(ndk_home) = env::var("ANDROID_NDK_HOME")
+    {
+        println!("cargo:rustc-env=XBUILD_ANDROID_NDK={ndk_home}");
     }
 }
 

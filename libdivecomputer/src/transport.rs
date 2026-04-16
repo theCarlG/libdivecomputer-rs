@@ -1,5 +1,6 @@
 use std::{fmt, str::FromStr};
 
+use libdivecomputer_sys as ffi;
 use serde::{Deserialize, Serialize};
 
 use crate::error::LibError;
@@ -30,6 +31,23 @@ impl fmt::Display for Transport {
             Self::UsbStorage => "USB Storage",
         };
         write!(f, "{s}")
+    }
+}
+
+impl TryFrom<ffi::dc_transport_t> for Transport {
+    type Error = ffi::dc_transport_t;
+
+    fn try_from(value: ffi::dc_transport_t) -> std::result::Result<Self, Self::Error> {
+        match value {
+            ffi::DC_TRANSPORT_SERIAL => Ok(Self::Serial),
+            ffi::DC_TRANSPORT_USB => Ok(Self::Usb),
+            ffi::DC_TRANSPORT_USBHID => Ok(Self::UsbHid),
+            ffi::DC_TRANSPORT_IRDA => Ok(Self::Irda),
+            ffi::DC_TRANSPORT_BLUETOOTH => Ok(Self::Bluetooth),
+            ffi::DC_TRANSPORT_BLE => Ok(Self::Ble),
+            ffi::DC_TRANSPORT_USBSTORAGE => Ok(Self::UsbStorage),
+            other => Err(other),
+        }
     }
 }
 

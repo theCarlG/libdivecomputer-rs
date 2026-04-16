@@ -47,6 +47,19 @@ impl Status {
             Err(LibError::status_with_context(rc, context))
         }
     }
+
+    /// Check an FFI return code from an iterator-style call that may return
+    /// `DC_STATUS_DONE`. Returns `Ok(true)` on success, `Ok(false)` when the
+    /// iterator is exhausted, and `Err` for real errors.
+    pub(crate) fn check_done(rc: ffi::dc_status_t, context: &str) -> Result<bool> {
+        if rc == ffi::DC_STATUS_SUCCESS {
+            Ok(true)
+        } else if rc == ffi::DC_STATUS_DONE {
+            Ok(false)
+        } else {
+            Err(LibError::status_with_context(rc, context))
+        }
+    }
 }
 
 impl fmt::Display for Status {
@@ -151,22 +164,31 @@ mod tests {
 
     #[test]
     fn check_unsupported_success() {
-        assert_eq!(
-            Status::check_unsupported(ffi::DC_STATUS_SUCCESS, "test").unwrap(),
-            true
-        );
+        assert!(Status::check_unsupported(ffi::DC_STATUS_SUCCESS, "test").unwrap());
     }
 
     #[test]
     fn check_unsupported_unsupported() {
-        assert_eq!(
-            Status::check_unsupported(ffi::DC_STATUS_UNSUPPORTED, "test").unwrap(),
-            false
-        );
+        assert!(!Status::check_unsupported(ffi::DC_STATUS_UNSUPPORTED, "test").unwrap());
     }
 
     #[test]
     fn check_unsupported_error() {
         assert!(Status::check_unsupported(ffi::DC_STATUS_IO, "test").is_err());
+    }
+
+    #[test]
+    fn check_done_success() {
+        assert!(Status::check_done(ffi::DC_STATUS_SUCCESS, "test").unwrap());
+    }
+
+    #[test]
+    fn check_done_done() {
+        assert!(!Status::check_done(ffi::DC_STATUS_DONE, "test").unwrap());
+    }
+
+    #[test]
+    fn check_done_error() {
+        assert!(Status::check_done(ffi::DC_STATUS_IO, "test").is_err());
     }
 }

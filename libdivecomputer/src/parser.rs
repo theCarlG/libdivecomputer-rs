@@ -2,6 +2,7 @@ pub mod types;
 
 use std::{
     ffi::{CStr, c_void},
+    mem::MaybeUninit,
     ptr,
     time::Duration,
 };
@@ -11,7 +12,7 @@ pub use types::*;
 use libdivecomputer_sys as ffi;
 
 use crate::{
-    common::{EventKind, as_void_ptr, from_void_ptr},
+    common::{EventKind, as_void_ptr, ffi_guard, from_void_ptr},
     context::Context,
     descriptor::Descriptor,
     device::Device,
@@ -139,208 +140,162 @@ struct ParseData<'a> {
     sample: DiveSample,
 }
 
+/// Read an arbitrary scalar/struct field from the parser.
+///
+/// Returns `Ok(None)` on `DC_STATUS_UNSUPPORTED`, `Err` on a real error, and
+/// `Ok(Some(value))` on success. The buffer is left uninitialised until the
+/// C library writes to it on success — avoiding the `MaybeUninit::zeroed`
+/// fast-path means we don't rely on "all zeros is a valid bit pattern" for
+/// the target FFI struct.
+///
+/// # Safety
+/// `parser` must be a valid `dc_parser_t`, and the caller must pick a `T`
+/// whose layout matches what `dc_parser_get_field` populates for the given
+/// `field` index. Picking the wrong `T` is UB.
+unsafe fn get_field<T>(
+    parser: *mut ffi::dc_parser_t,
+    field: ffi::dc_field_type_t,
+    idx: u32,
+    ctx: &str,
+) -> Result<Option<T>> {
+    let mut value = MaybeUninit::<T>::uninit();
+    let status =
+        unsafe { ffi::dc_parser_get_field(parser, field, idx, value.as_mut_ptr().cast()) };
+    if Status::check_unsupported(status, ctx)? {
+        Ok(Some(unsafe { value.assume_init() }))
+    } else {
+        Ok(None)
+    }
+}
+
 fn parse_fields(parser: *mut ffi::dc_parser_t) -> Result<Dive> {
-    unsafe {
-        let mut dive = Dive::default();
+    let mut dive = Dive::default();
 
-        // Datetime
-        let mut dt = std::mem::MaybeUninit::<ffi::dc_datetime_t>::zeroed().assume_init();
-        let status = ffi::dc_parser_get_datetime(parser, &mut dt);
-        if Status::check_unsupported(status, "failed to parse datetime")? {
-            dive.start = crate::datetime::ffi_to_timestamp(&dt)?;
-        }
+    // Datetime (uses a dedicated FFI entry point, not dc_parser_get_field).
+    let mut dt = MaybeUninit::<ffi::dc_datetime_t>::uninit();
+    let status = unsafe { ffi::dc_parser_get_datetime(parser, dt.as_mut_ptr()) };
+    if Status::check_unsupported(status, "failed to parse datetime")? {
+        let dt = unsafe { dt.assume_init() };
+        dive.start = crate::datetime::ffi_to_timestamp(&dt)?;
+    }
 
-        // Divetime
-        let mut divetime: u32 = 0;
-        let status = ffi::dc_parser_get_field(
-            parser,
-            ffi::DC_FIELD_DIVETIME,
-            0,
-            &mut divetime as *mut _ as *mut c_void,
-        );
-        Status::check_unsupported(status, "failed to parse divetime")?;
+    // Required-ish scalar fields. If UNSUPPORTED, fall back to default.
+    if let Some(divetime) =
+        unsafe { get_field::<u32>(parser, ffi::DC_FIELD_DIVETIME, 0, "divetime")? }
+    {
         dive.duration = Duration::from_secs(divetime as u64);
+    }
+    if let Some(max_depth) =
+        unsafe { get_field::<f64>(parser, ffi::DC_FIELD_MAXDEPTH, 0, "max depth")? }
+    {
+        dive.max_depth = max_depth;
+    }
 
-        // Max depth
-        let status = ffi::dc_parser_get_field(
-            parser,
-            ffi::DC_FIELD_MAXDEPTH,
-            0,
-            &mut dive.max_depth as *mut _ as *mut c_void,
-        );
-        Status::check_unsupported(status, "failed to parse max depth")?;
-
-        // Avg depth
-        let mut avg_depth: f64 = 0.0;
-        let status = ffi::dc_parser_get_field(
-            parser,
-            ffi::DC_FIELD_AVGDEPTH,
-            0,
-            &mut avg_depth as *mut _ as *mut c_void,
-        );
-        if Status::check_unsupported(status, "failed to parse avg depth")? {
-            dive.avg_depth = Some(avg_depth);
-        }
-
-        // Temperatures
-        let mut temp_max: f64 = 0.0;
-        let status = ffi::dc_parser_get_field(
+    // Optional scalar fields.
+    dive.avg_depth = unsafe { get_field(parser, ffi::DC_FIELD_AVGDEPTH, 0, "avg depth")? };
+    dive.temperature_maximum = unsafe {
+        get_field(
             parser,
             ffi::DC_FIELD_TEMPERATURE_MAXIMUM,
             0,
-            &mut temp_max as *mut _ as *mut c_void,
-        );
-        if Status::check_unsupported(status, "failed to parse max temperature")? {
-            dive.temperature_maximum = Some(temp_max);
-        }
-
-        let mut temp_min: f64 = 0.0;
-        let status = ffi::dc_parser_get_field(
+            "max temperature",
+        )?
+    };
+    dive.temperature_minimum = unsafe {
+        get_field(
             parser,
             ffi::DC_FIELD_TEMPERATURE_MINIMUM,
             0,
-            &mut temp_min as *mut _ as *mut c_void,
-        );
-        if Status::check_unsupported(status, "failed to parse min temperature")? {
-            dive.temperature_minimum = Some(temp_min);
-        }
-
-        let mut temp_surface: f64 = 0.0;
-        let status = ffi::dc_parser_get_field(
+            "min temperature",
+        )?
+    };
+    dive.temperature_surface = unsafe {
+        get_field(
             parser,
             ffi::DC_FIELD_TEMPERATURE_SURFACE,
             0,
-            &mut temp_surface as *mut _ as *mut c_void,
-        );
-        if Status::check_unsupported(status, "failed to parse surface temperature")? {
-            dive.temperature_surface = Some(temp_surface);
-        }
-
-        // Gas mixes
-        let mut num_gases: u32 = 0;
-        let status = ffi::dc_parser_get_field(
-            parser,
-            ffi::DC_FIELD_GASMIX_COUNT,
-            0,
-            &mut num_gases as *mut _ as *mut c_void,
-        );
-        Status::check_unsupported(status, "failed to parse gasmix count")?;
-
-        for i in 0..num_gases {
-            let mut gasmix = std::mem::MaybeUninit::<ffi::dc_gasmix_t>::zeroed().assume_init();
-            let status = ffi::dc_parser_get_field(
-                parser,
-                ffi::DC_FIELD_GASMIX,
-                i,
-                &mut gasmix as *mut _ as *mut c_void,
-            );
-            Status::check_unsupported(status, "failed to parse gasmix")?;
-            dive.gasmixes.push(Gasmix::from(gasmix));
-        }
-
-        // Tanks
-        let mut num_tanks: u32 = 0;
-        let status = ffi::dc_parser_get_field(
-            parser,
-            ffi::DC_FIELD_TANK_COUNT,
-            0,
-            &mut num_tanks as *mut _ as *mut c_void,
-        );
-        Status::check_unsupported(status, "failed to parse tank count")?;
-
-        for i in 0..num_tanks {
-            let mut tank = std::mem::MaybeUninit::<ffi::dc_tank_t>::zeroed().assume_init();
-            let status = ffi::dc_parser_get_field(
-                parser,
-                ffi::DC_FIELD_TANK,
-                i,
-                &mut tank as *mut _ as *mut c_void,
-            );
-            Status::check_unsupported(status, "failed to parse tank")?;
-            dive.tanks.push(Tank::from(tank));
-        }
-
-        // Dive mode
-        let mut divemode = ffi::DC_DIVEMODE_OC;
-        let status = ffi::dc_parser_get_field(
-            parser,
-            ffi::DC_FIELD_DIVEMODE,
-            0,
-            &mut divemode as *mut _ as *mut c_void,
-        );
-        Status::check_unsupported(status, "failed to parse dive mode")?;
-        dive.dive_mode = DiveMode::from(divemode);
-
-        // Deco model
-        let mut decomodel = std::mem::MaybeUninit::<ffi::dc_decomodel_t>::zeroed().assume_init();
-        let status = ffi::dc_parser_get_field(
-            parser,
-            ffi::DC_FIELD_DECOMODEL,
-            0,
-            &mut decomodel as *mut _ as *mut c_void,
-        );
-        Status::check_unsupported(status, "failed to parse deco model")?;
-        dive.deco_model = DecoModel::from(decomodel);
-
-        // Salinity
-        let mut salinity = std::mem::MaybeUninit::<ffi::dc_salinity_t>::zeroed().assume_init();
-        let status = ffi::dc_parser_get_field(
-            parser,
-            ffi::DC_FIELD_SALINITY,
-            0,
-            &mut salinity as *mut _ as *mut c_void,
-        );
-        if Status::check_unsupported(status, "failed to parse salinity")? {
-            dive.salinity = Some(Salinity::from(salinity));
-        }
-
-        // Atmospheric pressure
-        let mut atmospheric: f64 = 0.0;
-        let status = ffi::dc_parser_get_field(
+            "surface temperature",
+        )?
+    };
+    dive.atmospheric_pressure = unsafe {
+        get_field(
             parser,
             ffi::DC_FIELD_ATMOSPHERIC,
             0,
-            &mut atmospheric as *mut _ as *mut c_void,
-        );
-        if Status::check_unsupported(status, "failed to parse atmospheric pressure")? {
-            dive.atmospheric_pressure = Some(atmospheric);
-        }
+            "atmospheric pressure",
+        )?
+    };
 
-        // String fields (metadata)
-        for idx in 0u32.. {
-            let mut field = std::mem::MaybeUninit::<ffi::dc_field_string_t>::zeroed().assume_init();
-            let status = ffi::dc_parser_get_field(
+    // Gas mixes.
+    let num_gases: u32 =
+        unsafe { get_field(parser, ffi::DC_FIELD_GASMIX_COUNT, 0, "gasmix count")? }
+            .unwrap_or(0);
+    for i in 0..num_gases {
+        if let Some(gm) =
+            unsafe { get_field::<ffi::dc_gasmix_t>(parser, ffi::DC_FIELD_GASMIX, i, "gasmix")? }
+        {
+            dive.gasmixes.push(Gasmix::from(gm));
+        }
+    }
+
+    // Tanks.
+    let num_tanks: u32 =
+        unsafe { get_field(parser, ffi::DC_FIELD_TANK_COUNT, 0, "tank count")? }.unwrap_or(0);
+    for i in 0..num_tanks {
+        if let Some(tank) =
+            unsafe { get_field::<ffi::dc_tank_t>(parser, ffi::DC_FIELD_TANK, i, "tank")? }
+        {
+            dive.tanks.push(Tank::from(tank));
+        }
+    }
+
+    // Dive mode — fall back to open-circuit if unsupported, matching the
+    // previous behaviour.
+    let divemode = unsafe {
+        get_field::<ffi::dc_divemode_t>(parser, ffi::DC_FIELD_DIVEMODE, 0, "dive mode")?
+    }
+    .unwrap_or(ffi::DC_DIVEMODE_OC);
+    dive.dive_mode = DiveMode::from(divemode);
+
+    // Deco model.
+    if let Some(dm) = unsafe {
+        get_field::<ffi::dc_decomodel_t>(parser, ffi::DC_FIELD_DECOMODEL, 0, "deco model")?
+    } {
+        dive.deco_model = DecoModel::from(dm);
+    }
+
+    // Salinity and location.
+    dive.salinity = unsafe {
+        get_field::<ffi::dc_salinity_t>(parser, ffi::DC_FIELD_SALINITY, 0, "salinity")?
+    }
+    .map(Salinity::from);
+    dive.location = unsafe {
+        get_field::<ffi::dc_location_t>(parser, ffi::DC_FIELD_LOCATION, 0, "location")?
+    }
+    .map(Location::from);
+
+    // String fields (metadata). Iterate until the C library reports
+    // UNSUPPORTED or returns NULL description/value pointers.
+    for idx in 0u32.. {
+        let Some(field) = (unsafe {
+            get_field::<ffi::dc_field_string_t>(
                 parser,
                 ffi::DC_FIELD_STRING,
                 idx,
-                &mut field as *mut _ as *mut c_void,
-            );
-            if !Status::check_unsupported(status, "failed to parse string field")?
-                || field.desc.is_null()
-                || field.value.is_null()
-            {
-                break;
-            }
-
-            let key = CStr::from_ptr(field.desc).to_string_lossy().into_owned();
-            let value = CStr::from_ptr(field.value).to_string_lossy().into_owned();
-            dive.metadata.insert(key, value);
+                "string field",
+            )?
+        }) else {
+            break;
+        };
+        if field.desc.is_null() || field.value.is_null() {
+            break;
         }
-
-        // Location
-        let mut location = std::mem::MaybeUninit::<ffi::dc_location_t>::zeroed().assume_init();
-        let status = ffi::dc_parser_get_field(
-            parser,
-            ffi::DC_FIELD_LOCATION,
-            0,
-            &mut location as *mut _ as *mut c_void,
-        );
-        if Status::check_unsupported(status, "failed to parse location")? {
-            dive.location = Some(Location::from(location));
-        }
-
-        Ok(dive)
+        let key = unsafe { CStr::from_ptr(field.desc).to_string_lossy().into_owned() };
+        let value = unsafe { CStr::from_ptr(field.value).to_string_lossy().into_owned() };
+        dive.metadata.insert(key, value);
     }
+
+    Ok(dive)
 }
 
 extern "C" fn sample_callback(
@@ -348,7 +303,7 @@ extern "C" fn sample_callback(
     pvalue: *const ffi::dc_sample_value_t,
     userdata: *mut c_void,
 ) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+    ffi_guard(|| unsafe {
         let parse_data = from_void_ptr::<ParseData>(userdata);
         let value = *pvalue;
 
@@ -465,5 +420,5 @@ extern "C" fn sample_callback(
 
             _ => {}
         }
-    }));
+    })
 }
