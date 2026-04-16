@@ -102,9 +102,11 @@ impl IoStream {
             ConnectionInfo::Irda { address, .. } => Self::irda(ctx, *address, 1),
             ConnectionInfo::UsbStorage { path, .. } => Self::usb_storage(ctx, path),
             #[cfg(feature = "ble")]
-            ConnectionInfo::Ble { address_string, .. } => {
-                crate::ble::ble_iostream_open(ctx, address_string)
-            }
+            ConnectionInfo::Ble {
+                address_string,
+                service_name,
+                ..
+            } => crate::ble::ble_iostream_open(ctx, address_string, service_name),
             #[cfg(not(feature = "ble"))]
             ConnectionInfo::Ble { .. } => Err(LibError::TransportNotSupported("BLE".into())),
             ConnectionInfo::Usb { .. } | ConnectionInfo::UsbHid { .. } => {

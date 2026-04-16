@@ -45,3 +45,18 @@ pub const KNOWN_SERVICES: &[(Uuid, &str)] = &[
         "Halcyon Symbios",
     ),
 ];
+
+/// Whether a BLE dive computer advertises with a random static LE address.
+///
+/// Mirrors Subsurface's `use_random_address()` helper in `core/qt-ble.cpp`:
+/// Shearwater and Garmin devices need the host BLE stack told the address
+/// type up front, otherwise `connectGatt()` on Android can race service
+/// discovery and surface with an incomplete service list on the first
+/// attempt.
+///
+/// The match is by service-name substring to match the strings stored in
+/// [`KNOWN_SERVICES`]; Garmin is not yet in that table but is listed here
+/// so the check is ready when it is.
+pub fn use_random_address(service_name: &str) -> bool {
+    service_name.contains("Shearwater") || service_name.contains("Garmin")
+}

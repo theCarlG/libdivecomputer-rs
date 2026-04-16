@@ -23,6 +23,8 @@ use crate::scanner::mac_string_to_u64;
 use crate::transport::Transport;
 
 use services::KNOWN_SERVICES;
+#[cfg(target_os = "android")]
+use services::use_random_address;
 
 type PendingReads = Vec<(usize, oneshot::Sender<std::result::Result<Vec<u8>, String>>)>;
 
@@ -244,7 +246,7 @@ impl BleTransport {
     /// Find the peripheral once, then retry only the session-open portion.
     /// Rescanning on every retry (the previous behavior) ate ~5s of every
     /// attempt for no benefit.
-    async fn connect(mac_address: &str) -> Result<Self> {
+    async fn connect(mac_address: &str, service_name: &str) -> Result<Self> {
         log::debug!("ble: scanning for peripheral {mac_address}");
 
         let manager = Manager::new().await?;
@@ -254,7 +256,7 @@ impl BleTransport {
             .next()
             .ok_or(LibError::NoBluetoothAdapter)?;
 
-        let peripheral = Self::find_peripheral(&adapter, mac_address).await?;
+        let peripheral = Self::find_peripheral(&adapter, mac_address, service_name).await?;
         let device_name = peripheral
             .properties()
             .await?
@@ -515,8 +517,13 @@ impl BleTransport {
         true
     }
 
-    async fn find_peripheral(adapter: &Adapter, mac_address: &str) -> Result<Peripheral> {
+    async fn find_peripheral(
+        adapter: &Adapter,
+        mac_address: &str,
+        service_name: &str,
+    ) -> Result<Peripheral> {
         let target = mac_address.to_lowercase();
+        let _ = service_name; // only read on Android below; silence warnings elsewhere
 
         // Tier 1: cached peripherals already known to this Manager session.
         // After the first sync of a process this is enough to avoid the
@@ -540,10 +547,28 @@ impl BleTransport {
         // bypasses Shearwater's "stops advertising when it sees its previous
         // peer phone" radio behavior. Requires the local btleplug fork that
         // exposes `From<BDAddr>` for the droidplug PeripheralId.
+        //
+        // For devices that advertise with a random static address
+        // (Shearwater/Garmin — see [`use_random_address`]) go through the
+        // address-type aware API so Android's `BluetoothAdapter.getRemoteLeDevice`
+        // is called with ADDRESS_TYPE_RANDOM. This mirrors Subsurface's
+        // `setRemoteAddressType(RandomAddress)` workaround in
+        // `core/qt-ble.cpp` and prevents `connectGatt()` from racing service
+        // discovery with the wrong link-layer address type.
         #[cfg(target_os = "android")]
         if let Ok(addr) = mac_address.parse::<btleplug::api::BDAddr>() {
             let id: btleplug::platform::PeripheralId = addr.into();
-            match adapter.add_peripheral(&id).await {
+            let result = if use_random_address(service_name) {
+                log::debug!(
+                    "ble: {mac_address} ({service_name}) using ADDRESS_TYPE_RANDOM per Subsurface's use_random_address()"
+                );
+                adapter
+                    .add_peripheral_with_address_type(&id, btleplug::api::AddressType::Random)
+                    .await
+            } else {
+                adapter.add_peripheral(&id).await
+            };
+            match result {
                 Ok(peripheral) => {
                     log::debug!(
                         "ble: {mac_address} resolved via add_peripheral (no scan, no advertising required)"
@@ -883,7 +908,15 @@ extern "C" fn ble_ioctl(
 /// Open a BLE iostream for the given MAC address. The retry-on-first-connect
 /// behavior lives inside [`BleTransport::connect`] so that retries don't waste
 /// time re-running the upfront peripheral scan.
-pub fn ble_iostream_open(ctx: &crate::context::Context, mac_address: &str) -> Result<IoStream> {
+///
+/// `service_name` is the stored service name from [`services::KNOWN_SERVICES`]
+/// and is used to pick the LE address type on Android — see
+/// [`services::use_random_address`].
+pub fn ble_iostream_open(
+    ctx: &crate::context::Context,
+    mac_address: &str,
+    service_name: &str,
+) -> Result<IoStream> {
     #[cfg(target_os = "android")]
     let _jni_guard = android::attach_current_thread()
         .map_err(|e| LibError::DeviceError(format!("JNI attach failed: {e}")))?;
@@ -896,7 +929,7 @@ pub fn ble_iostream_open(ctx: &crate::context::Context, mac_address: &str) -> Re
 
     let addr = mac_address.strip_prefix("LE:").unwrap_or(mac_address);
 
-    let transport = rt.block_on(BleTransport::connect(addr))?;
+    let transport = rt.block_on(BleTransport::connect(addr, service_name))?;
     let io_ptr = Box::into_raw(Box::new(transport)) as *mut c_void;
 
     let callbacks = ffi::dc_custom_cbs_t {
