@@ -37,6 +37,7 @@ pub struct Context {
 
 impl Context {
     /// Create a new context. Prefer `Context::builder()` for configuration.
+    #[must_use = "the created Context owns a C allocation"]
     pub fn new() -> Result<Self> {
         let mut ptr = ptr::null_mut();
         let status = unsafe { ffi::dc_context_new(&mut ptr) };
@@ -48,6 +49,7 @@ impl Context {
     }
 
     /// Create a context builder for configuration.
+    #[must_use = "ContextBuilder does nothing until build() is called"]
     pub fn builder() -> ContextBuilder {
         ContextBuilder::default()
     }
@@ -144,11 +146,13 @@ impl std::fmt::Debug for ContextBuilder {
 }
 
 impl ContextBuilder {
+    #[must_use]
     pub fn log_level(mut self, level: LogLevel) -> Self {
         self.log_level = Some(level);
         self
     }
 
+    #[must_use]
     pub fn log_fn<F>(mut self, f: F) -> Self
     where
         F: Fn(LogLevel, &str) + Send + Sync + 'static,
@@ -157,6 +161,7 @@ impl ContextBuilder {
         self
     }
 
+    #[must_use = "the constructed Context owns a C allocation"]
     pub fn build(self) -> Result<Context> {
         let mut ctx = Context::new()?;
 

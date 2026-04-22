@@ -20,6 +20,7 @@ unsafe impl Sync for Descriptor {}
 
 impl Descriptor {
     /// Iterate over all known dive computer descriptors.
+    #[must_use = "the iterator should be consumed"]
     pub fn iter() -> Result<DescriptorIter> {
         let mut iterator: *mut ffi::dc_iterator_t = ptr::null_mut();
         let status = unsafe { ffi::dc_descriptor_iterator_new(&mut iterator, ptr::null_mut()) };
@@ -28,6 +29,7 @@ impl Descriptor {
     }
 
     /// Find a descriptor by vendor and product name.
+    #[must_use = "look-up result should be inspected"]
     pub fn find(vendor: &str, product: &str) -> Result<Option<Descriptor>> {
         for desc in Self::iter()? {
             if desc.vendor() == vendor && desc.product() == product {
@@ -38,6 +40,7 @@ impl Descriptor {
     }
 
     /// Find a descriptor by full name ("Vendor Product").
+    #[must_use = "look-up result should be inspected"]
     pub fn find_by_name(name: &str) -> Result<Descriptor> {
         for desc in Self::iter()? {
             let full_name = format!("{} {}", desc.vendor(), desc.product());

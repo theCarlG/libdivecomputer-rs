@@ -52,6 +52,7 @@ impl Parser {
     }
 
     /// Create a parser from a descriptor (for parsing saved dive data).
+    #[must_use = "the created Parser owns a C allocation"]
     pub fn from_descriptor(ctx: &Context, desc: &Descriptor, data: &[u8]) -> Result<Self> {
         let mut ptr = ptr::null_mut();
         let status = unsafe {
@@ -86,6 +87,7 @@ impl Parser {
     }
 
     /// Parse all fields and samples into a `Dive`.
+    #[must_use = "parsed dive data should not be silently discarded"]
     pub fn parse(&self, fingerprint: &Fingerprint) -> Result<Dive> {
         let mut dive = Dive {
             fingerprint: fingerprint.clone(),

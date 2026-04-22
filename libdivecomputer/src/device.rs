@@ -165,6 +165,7 @@ unsafe impl Send for Device {}
 
 impl Device {
     /// Open a device connection.
+    #[must_use = "the opened Device owns the iostream and must be used or explicitly dropped"]
     pub fn open(ctx: &Context, desc: &Descriptor, iostream: IoStream) -> Result<Self> {
         let mut ptr = ptr::null_mut();
         let status = unsafe { ffi::dc_device_open(&mut ptr, ctx.ptr(), desc.ptr, iostream.ptr) };
@@ -194,6 +195,7 @@ impl Device {
     ///
     /// The callback receives `(data, fingerprint)` and returns `true` to continue.
     /// Optionally provide an event callback and/or a cancel callback.
+    #[must_use = "the Result reports download errors that should not be silently discarded"]
     pub fn foreach(
         &self,
         dive_cb: &mut dyn FnMut(&[u8], &Fingerprint) -> bool,
@@ -273,6 +275,7 @@ impl Device {
     }
 
     /// Create a parser for dive data from this device.
+    #[must_use = "the created Parser owns a C allocation"]
     pub fn parser(&self, data: &[u8]) -> Result<Parser> {
         Parser::from_device(self, data)
     }
@@ -283,6 +286,7 @@ impl Device {
     /// For streaming or custom control flow, use the lower-level `foreach` method.
     ///
     /// Returns successfully parsed dives and any parse errors that occurred.
+    #[must_use = "downloaded dives and errors should not be silently discarded"]
     pub fn download_dives(&self, options: DownloadOptions<'_>) -> DownloadResult {
         if let Some(fp) = options.fingerprint
             && let Err(e) = self.set_fingerprint(fp)

@@ -37,10 +37,12 @@ pub struct Fingerprint {
 }
 
 impl Fingerprint {
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
+    #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.data
     }
@@ -70,6 +72,7 @@ impl Fingerprint {
     }
 
     /// Convert the fingerprint to a hex string.
+    #[must_use]
     pub fn to_hex(&self) -> String {
         self.to_string()
     }

@@ -78,6 +78,7 @@ impl IoStream {
     /// This is the recommended way to open a connection. For transport-specific
     /// options (e.g. custom Bluetooth port or IrDA LSAP), use the individual
     /// constructors directly.
+    #[must_use = "the opened IoStream must be passed to Device::open"]
     pub fn open(ctx: &Context, connection: &ConnectionInfo) -> Result<Self> {
         match connection {
             ConnectionInfo::Serial { path, .. } => Self::serial(ctx, path),
@@ -118,6 +119,7 @@ impl IoStream {
     }
 
     /// Open a serial port iostream.
+    #[must_use = "the opened IoStream must be passed to Device::open"]
     pub fn serial(ctx: &Context, name: &str) -> Result<Self> {
         let mut ptr = ptr::null_mut();
         let c_name = CString::new(name)?;
@@ -151,6 +153,7 @@ impl IoStream {
     }
 
     /// Open an IrDA iostream.
+    #[must_use = "the opened IoStream must be passed to Device::open"]
     pub fn irda(ctx: &Context, address: u32, lsap: u32) -> Result<Self> {
         let mut ptr = ptr::null_mut();
         let status = unsafe { ffi::dc_irda_open(&mut ptr, ctx.ptr(), address, lsap) };
@@ -159,6 +162,7 @@ impl IoStream {
     }
 
     /// Open a Bluetooth iostream.
+    #[must_use = "the opened IoStream must be passed to Device::open"]
     pub fn bluetooth(ctx: &Context, address: u64, port: u32) -> Result<Self> {
         let mut ptr = ptr::null_mut();
         let status = unsafe { ffi::dc_bluetooth_open(&mut ptr, ctx.ptr(), address, port) };
@@ -167,6 +171,7 @@ impl IoStream {
     }
 
     /// Open a USB storage iostream (for mass-storage dive computers).
+    #[must_use = "the opened IoStream must be passed to Device::open"]
     pub fn usb_storage(ctx: &Context, name: &str) -> Result<Self> {
         let mut ptr = ptr::null_mut();
         let c_name = CString::new(name)?;

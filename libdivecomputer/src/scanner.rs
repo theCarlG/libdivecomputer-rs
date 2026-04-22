@@ -36,6 +36,7 @@ impl<'a> ScanBuilder<'a> {
     }
 
     /// Execute the scan and return discovered devices.
+    #[must_use = "discovered devices should be inspected"]
     pub fn execute(self) -> Result<Vec<DeviceInfo>> {
         match self.transport {
             Transport::Serial => scan_serial(self.ctx),
