@@ -37,25 +37,44 @@ where
     catch_unwind(AssertUnwindSafe(f)).unwrap_or_default()
 }
 
+/// Which field of a dive sample a given reading populates. A single
+/// [`DiveSample`](crate::parser::DiveSample) may carry multiple readings of
+/// different kinds.
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize_repr)]
 #[non_exhaustive]
 pub enum SampleKind {
+    /// Elapsed time since the start of the dive.
     Time,
+    /// Instantaneous depth.
     Depth,
+    /// Tank pressure reading from a specific sensor.
     Pressure,
+    /// Water temperature.
     Temperature,
+    /// An event marker (see [`EventKind`]).
     Event,
+    /// Remaining bottom time, in minutes.
     Rbt,
+    /// Heart-rate reading.
     Heartbeat,
+    /// Compass bearing.
     Bearing,
+    /// Vendor-specific opaque blob.
     Vendor,
+    /// Rebreather setpoint (target PPO2).
     Setpoint,
+    /// Actual measured partial pressure of O2.
     Ppo2,
+    /// Central nervous system oxygen toxicity load, in percent.
     Cns,
+    /// Decompression state: NDL/TTS/ceiling/stop info.
     Deco,
+    /// Active gas mix index.
     Gasmix,
+    /// Individual O2 sensor cell reading (multi-cell rebreathers).
     O2sensor,
+    /// Time to surface, in minutes.
     TTS,
 }
 
@@ -83,37 +102,67 @@ impl std::fmt::Display for SampleKind {
     }
 }
 
+/// Event markers emitted by the dive computer during a dive — warnings, alarms,
+/// user bookmarks, gas changes, and so on. Paired with a
+/// [`SampleFlag`] severity/type on the sample.
 #[repr(u32)]
 #[derive(Debug, Default, PartialEq, Eq, Clone, Copy, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum EventKind {
+    /// No event / placeholder for unknown codes.
     #[default]
     None = ffi::SAMPLE_EVENT_NONE,
+    /// Decompression stop required.
     DecoStop = ffi::SAMPLE_EVENT_DECOSTOP,
+    /// Remaining bottom time warning.
     Rbt = ffi::SAMPLE_EVENT_RBT,
+    /// Ascent rate alarm.
     Ascent = ffi::SAMPLE_EVENT_ASCENT,
+    /// Ceiling violation (ascent past deco ceiling).
     Ceiling = ffi::SAMPLE_EVENT_CEILING,
+    /// Workload / exertion warning.
     Workload = ffi::SAMPLE_EVENT_WORKLOAD,
+    /// Tank-pressure transmitter state change.
     Transmitter = ffi::SAMPLE_EVENT_TRANSMITTER,
+    /// Safety violation (generic).
     Violation = ffi::SAMPLE_EVENT_VIOLATION,
+    /// User-placed bookmark.
     Bookmark = ffi::SAMPLE_EVENT_BOOKMARK,
+    /// Surface interval marker.
     Surface = ffi::SAMPLE_EVENT_SURFACE,
+    /// Safety stop required or in progress.
     SafetyStop = ffi::SAMPLE_EVENT_SAFETYSTOP,
+    /// Gas change (legacy variant — see [`Self::GasChange2`]).
     GasChange = ffi::SAMPLE_EVENT_GASCHANGE,
+    /// Voluntary safety stop.
     SafetyStopVoluntary = ffi::SAMPLE_EVENT_SAFETYSTOP_VOLUNTARY,
+    /// Mandatory safety stop.
     SafetyStopMandatory = ffi::SAMPLE_EVENT_SAFETYSTOP_MANDATORY,
+    /// Deep stop reached.
     DeepStop = ffi::SAMPLE_EVENT_DEEPSTOP,
+    /// Safety stop ceiling.
     CeilingSafetyStop = ffi::SAMPLE_EVENT_CEILING_SAFETYSTOP,
+    /// Floor (deepest allowable) depth.
     Floor = ffi::SAMPLE_EVENT_FLOOR,
+    /// Dive time alarm.
     DiveTime = ffi::SAMPLE_EVENT_DIVETIME,
+    /// Max depth alarm.
     MaxDepth = ffi::SAMPLE_EVENT_MAXDEPTH,
+    /// OLF (oxygen limit fraction) warning.
     Olf = ffi::SAMPLE_EVENT_OLF,
+    /// PO2 (oxygen partial pressure) alarm.
     Po2 = ffi::SAMPLE_EVENT_PO2,
+    /// Remaining air time warning.
     AirTime = ffi::SAMPLE_EVENT_AIRTIME,
+    /// RGBM decompression model state.
     Rgbm = ffi::SAMPLE_EVENT_RGBM,
+    /// Compass heading update.
     Heading = ffi::SAMPLE_EVENT_HEADING,
+    /// Tissue saturation level indicator.
     TissueLevel = ffi::SAMPLE_EVENT_TISSUELEVEL,
+    /// Gas change (extended variant with explicit o2/he percentages).
     GasChange2 = ffi::SAMPLE_EVENT_GASCHANGE2,
+    /// Free-form string annotation attached by the computer.
     String = ffi::SAMPLE_EVENT_STRING,
 }
 
@@ -190,44 +239,69 @@ const TYPE_SHIFT: u32 = 5;
 
 bitflags! {
     /// Sample event flags. These are bitmask values that can be combined.
+    ///
+    /// Encodes three fields: a begin/end marker, a severity level
+    /// (3 bits, accessors: [`SampleFlag::severity`] / [`SampleFlag::with_severity`]),
+    /// and an event type (3 bits, accessors: [`SampleFlag::event_type`] /
+    /// [`SampleFlag::with_event_type`]).
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(transparent)]
     pub struct SampleFlag: u32 {
+        /// Event is starting.
         const BEGIN = 1 << 0;
+        /// Event is ending.
         const END = 1 << 1;
+        /// Bitmask for the severity field.
         const SEVERITY_MASK = 7 << SEVERITY_SHIFT;
+        /// Informational state, no user action required.
         const SEVERITY_STATE = 1 << SEVERITY_SHIFT;
+        /// Informational.
         const SEVERITY_INFO = 2 << SEVERITY_SHIFT;
+        /// Warning.
         const SEVERITY_WARN = 3 << SEVERITY_SHIFT;
+        /// Alarm — diver should act.
         const SEVERITY_ALARM = 4 << SEVERITY_SHIFT;
+        /// Bitmask for the event-type field.
         const TYPE_MASK = 7 << TYPE_SHIFT;
+        /// Point of interest.
         const TYPE_INTEREST = 1 << TYPE_SHIFT;
+        /// Navigation point.
         const TYPE_NAVPOINT = 2 << TYPE_SHIFT;
+        /// Hazard.
         const TYPE_DANGER = 3 << TYPE_SHIFT;
+        /// Animal sighting.
         const TYPE_ANIMAL = 4 << TYPE_SHIFT;
+        /// Equipment or procedural issue.
         const TYPE_ISSUE = 5 << TYPE_SHIFT;
+        /// Injury.
         const TYPE_INJURY = 6 << TYPE_SHIFT;
     }
 }
 
 impl SampleFlag {
-    /// Extract the severity value from flags.
+    /// Extract the 3-bit severity value.
+    #[must_use]
     pub fn severity(self) -> u32 {
         (self & Self::SEVERITY_MASK).bits() >> SEVERITY_SHIFT
     }
 
-    /// Return flags with the severity field set.
+    /// Return flags with the severity field replaced. Only the low 3 bits of
+    /// `severity` are used; higher bits are silently masked.
+    #[must_use]
     pub fn with_severity(self, severity: u32) -> Self {
         let cleared = self & !Self::SEVERITY_MASK;
         cleared | Self::from_bits_truncate((severity & 0x7) << SEVERITY_SHIFT)
     }
 
-    /// Extract the type value from flags.
+    /// Extract the 3-bit event-type value.
+    #[must_use]
     pub fn event_type(self) -> u32 {
         (self & Self::TYPE_MASK).bits() >> TYPE_SHIFT
     }
 
-    /// Return flags with the type field set.
+    /// Return flags with the event-type field replaced. Only the low 3 bits of
+    /// `type_val` are used.
+    #[must_use]
     pub fn with_event_type(self, type_val: u32) -> Self {
         let cleared = self & !Self::TYPE_MASK;
         cleared | Self::from_bits_truncate((type_val & 0x7) << TYPE_SHIFT)

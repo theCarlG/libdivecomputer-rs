@@ -1,3 +1,4 @@
+/// Known BLE service and characteristic UUIDs for supported dive computers.
 pub mod services;
 
 use std::collections::VecDeque;
@@ -971,7 +972,7 @@ extern "C" fn ble_ioctl(
 }
 
 /// Open a BLE iostream for the given MAC address. The retry-on-first-connect
-/// behavior lives inside [`BleTransport::connect`] so that retries don't waste
+/// behavior lives inside `BleTransport::connect` so that retries don't waste
 /// time re-running the upfront peripheral scan.
 ///
 /// `service_name` is the stored service name from [`services::KNOWN_SERVICES`]

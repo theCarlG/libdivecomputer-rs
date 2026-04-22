@@ -6,22 +6,37 @@ use serde_repr::Deserialize_repr;
 
 use crate::error::{LibError, Result};
 
-/// FFI status codes returned by libdivecomputer C functions.
+/// FFI status codes returned by libdivecomputer C functions. These mirror
+/// `DC_STATUS_*` from the C header; mapping them into a typed enum lets
+/// [`LibError::Status`] carry them without
+/// ambiguity.
 #[repr(i32)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize_repr)]
 #[non_exhaustive]
 pub enum Status {
+    /// Operation succeeded.
     Success = 0,
+    /// Iterator-style operation completed normally (no more items).
     Done = 1,
+    /// Operation not supported by this device or transport.
     Unsupported = -1,
+    /// Caller passed invalid arguments.
     InvalidArgs = -2,
+    /// Allocation failed in the C library.
     NoMemory = -3,
+    /// No device found (scan produced no results).
     NoDevice = -4,
+    /// Permission denied or device in use.
     NoAccess = -5,
+    /// I/O error (read, write, connection drop).
     Io = -6,
+    /// Operation timed out.
     Timeout = -7,
+    /// Protocol-level error — device returned malformed data.
     Protocol = -8,
+    /// Dive data failed format validation.
     DataFormat = -9,
+    /// Operation cancelled by caller.
     Cancelled = -10,
 }
 

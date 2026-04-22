@@ -1,3 +1,5 @@
+/// Concrete dive data types produced by [`Parser::parse`]: `Dive`, `DiveSample`,
+/// `Gasmix`, `Tank`, `Fingerprint`, and friends.
 pub mod types;
 
 use std::{

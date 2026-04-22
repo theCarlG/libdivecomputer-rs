@@ -1,3 +1,7 @@
+// Thin wrappers over `suunto_*_device_*` C calls; function names mirror the
+// C API and are self-explanatory.
+#![allow(missing_docs)]
+
 use std::ffi::c_uint;
 
 use libdivecomputer_sys as ffi;

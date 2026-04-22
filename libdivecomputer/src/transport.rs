@@ -5,17 +5,26 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::LibError;
 
-/// Transport types supported by libdivecomputer.
+/// Transport types supported by libdivecomputer. The numeric values match
+/// `DC_TRANSPORT_*` as bitflags so an OR-combined set can round-trip through
+/// [`TransportSet`].
 #[repr(u32)]
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize, Hash, Ord, PartialOrd)]
 #[non_exhaustive]
 pub enum Transport {
+    /// RS-232 serial (real or USB CDC-ACM).
     Serial = 1 << 0,
+    /// Raw USB (vendor-specific endpoints).
     Usb = 1 << 1,
+    /// USB HID (common for Suunto, Mares).
     UsbHid = 1 << 2,
+    /// IrDA — infrared, mostly legacy.
     Irda = 1 << 3,
+    /// Classic Bluetooth (RFCOMM / SPP).
     Bluetooth = 1 << 4,
+    /// Bluetooth Low Energy (GATT).
     Ble = 1 << 5,
+    /// USB mass-storage — device exposes dive logs as files.
     UsbStorage = 1 << 6,
 }
 
@@ -78,16 +87,20 @@ pub struct TransportSet {
 
 impl TransportSet {
     /// Decode a bitfield from the C library into a `TransportSet`.
+    #[must_use]
     pub fn from_bits(bits: u32) -> Self {
         Self { bits }
     }
 
     /// Check if a specific transport is present.
+    #[must_use]
     pub fn contains(&self, transport: Transport) -> bool {
         self.bits & (transport as u32) != 0
     }
 
-    /// Return all transports present as a Vec.
+    /// Expand the bitfield into a vector of transports, in enum declaration
+    /// order.
+    #[must_use]
     pub fn to_vec(&self) -> Vec<Transport> {
         let all = [
             Transport::Serial,
@@ -101,7 +114,8 @@ impl TransportSet {
         all.iter().filter(|t| self.contains(**t)).copied().collect()
     }
 
-    /// Raw bits.
+    /// Raw underlying bitfield value as returned by the C library.
+    #[must_use]
     pub fn bits(&self) -> u32 {
         self.bits
     }

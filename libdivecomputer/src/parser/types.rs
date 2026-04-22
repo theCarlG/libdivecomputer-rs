@@ -10,38 +10,68 @@ use serde::{Deserialize, Serialize};
 
 use crate::{common::EventKind, error::LibError};
 
+/// A parsed dive. Produced by [`Parser::parse`](crate::parser::Parser::parse)
+/// from the raw bytes the C library hands back for a single dive record.
+///
+/// Most fields are `Option` or empty collections when the dive computer did
+/// not record that datum; defaults come from [`Default::default`].
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Dive {
+    /// Opaque per-dive identifier; stable across downloads for the same dive.
     pub fingerprint: Fingerprint,
+    /// Dive start time (UTC).
     pub start: jiff::Timestamp,
+    /// Total dive duration.
     pub duration: Duration,
+    /// Maximum depth reached, in metres.
     pub max_depth: f64,
+    /// Average depth over the dive, in metres, if recorded.
     pub avg_depth: Option<f64>,
+    /// Gas mixes configured for the dive, indexed by `Tank::gasmix_idx` and
+    /// `DiveSample::gasmix`.
     pub gasmixes: Vec<Gasmix>,
+    /// Surface atmospheric pressure at dive start, in bar.
     pub atmospheric_pressure: Option<f64>,
+    /// Surface water temperature at dive start, in °C.
     pub temperature_surface: Option<f64>,
+    /// Minimum water temperature during the dive, in °C.
     pub temperature_minimum: Option<f64>,
+    /// Maximum water temperature during the dive, in °C.
     pub temperature_maximum: Option<f64>,
+    /// Cylinders used during the dive.
     pub tanks: Vec<Tank>,
+    /// Dive mode (OC, CCR, …).
     pub dive_mode: DiveMode,
+    /// Deco model in effect during the dive.
     pub deco_model: DecoModel,
+    /// Water salinity and density, if reported by the device.
     pub salinity: Option<Salinity>,
+    /// GPS location of the dive, if tagged by the device.
     pub location: Option<Location>,
+    /// Per-sample time series for the dive (depth, temperature, events, …).
     pub samples: Vec<DiveSample>,
+    /// Free-form device metadata extracted from string fields on the dive
+    /// record (e.g. `STRING_KEY_SERIAL_NUMBER`,
+    /// `STRING_KEY_FIRMWARE_VERSION`).
     pub metadata: HashMap<String, String>,
 }
 
+/// Opaque per-dive identifier as used by libdivecomputer's incremental
+/// download. Two dives with the same fingerprint are the same dive.
 #[derive(Default, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Fingerprint {
     pub(crate) data: Vec<u8>,
 }
 
 impl Fingerprint {
+    /// Returns `true` if this fingerprint carries no bytes (the default /
+    /// "no dive yet" state).
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
     }
 
+    /// Raw fingerprint bytes, as the device reported them.
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.data
@@ -131,9 +161,12 @@ impl fmt::Debug for Fingerprint {
     }
 }
 
+/// Water salinity + density at dive start.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Salinity {
+    /// Salinity kind (fresh or salt).
     pub kind: SalinityKind,
+    /// Measured water density in kg/m³ (typically ~1000 fresh, ~1025 salt).
     pub density: f64,
 }
 
@@ -156,11 +189,14 @@ impl Display for Salinity {
     }
 }
 
+/// Water type for [`Salinity`].
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum SalinityKind {
+    /// Fresh water.
     #[default]
     Fresh,
+    /// Salt water.
     Salt,
 }
 
@@ -173,10 +209,14 @@ impl Display for SalinityKind {
     }
 }
 
+/// GPS location of the dive site, as tagged by the device.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Location {
+    /// Latitude in degrees (WGS-84).
     pub latitude: f64,
+    /// Longitude in degrees (WGS-84).
     pub longitude: f64,
+    /// Altitude above sea level in metres (for altitude dives).
     pub altitude: f64,
 }
 
@@ -190,15 +230,22 @@ impl From<ffi::dc_location_t> for Location {
     }
 }
 
+/// Dive mode — the high-level style of diving reported by the computer.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub enum DiveMode {
+    /// Mode not recorded or unknown.
     #[default]
     None,
+    /// Breath-hold / freediving.
     Freedive,
+    /// Gauge mode (depth + time only, no deco calculations).
     Gauge,
+    /// Open-circuit scuba.
     OC,
+    /// Closed-circuit rebreather.
     CCR,
+    /// Semi-closed-circuit rebreather.
     SCR,
 }
 
@@ -252,23 +299,35 @@ impl fmt::Display for DiveMode {
     }
 }
 
+/// Decompression model used by the dive computer, plus its parameters.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum DecoModel {
+    /// Model not recorded or unknown.
     #[default]
     None,
+    /// Bühlmann ZH-L with gradient factors.
     Buhlmann {
+        /// Conservatism level (vendor-specific scale).
         conservatism: i32,
+        /// Gradient factor low (percent, e.g. `30` for GF 30/70).
         low: u32,
+        /// Gradient factor high (percent).
         high: u32,
     },
+    /// Varying Permeability Model.
     Vpm {
+        /// Conservatism level (vendor-specific scale).
         conservatism: i32,
     },
+    /// Reduced Gradient Bubble Model.
     Rgbm {
+        /// Conservatism level (vendor-specific scale).
         conservatism: i32,
     },
+    /// Defence and Civil Institute of Environmental Medicine model.
     Dciem {
+        /// Conservatism level (vendor-specific scale).
         conservatism: i32,
     },
 }
@@ -297,14 +356,24 @@ impl From<ffi::dc_decomodel_t> for DecoModel {
     }
 }
 
+/// A single cylinder used during a dive.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Tank {
+    /// Index into `Dive::gasmixes` for the gas in this tank; `None` if the
+    /// device didn't associate a gas mix with the tank.
     pub gasmix_idx: Option<usize>,
+    /// Volume encoding (metric vs. imperial).
     pub kind: TankKind,
+    /// Cylinder volume. Units depend on [`TankKind`] — litres for metric,
+    /// cubic feet for imperial.
     pub volume: f64,
+    /// Working pressure in bar (0 if not reported).
     pub work_pressure: f64,
+    /// Pressure at the start of the dive, in bar.
     pub begin_pressure: f64,
+    /// Pressure at the end of the dive, in bar.
     pub end_pressure: f64,
+    /// How the tank is used in the configuration (e.g. sidemount).
     pub usage: TankUsage,
 }
 
@@ -328,12 +397,17 @@ impl From<ffi::dc_tank_t> for Tank {
     }
 }
 
+/// Volume encoding for a cylinder. Affects the interpretation of
+/// [`Tank::volume`].
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum TankKind {
+    /// Kind not recorded.
     #[default]
     None,
+    /// Volume is in litres (water capacity).
     Metric,
+    /// Volume is in cubic feet at working pressure.
     Imperial,
 }
 
@@ -347,11 +421,14 @@ impl From<u32> for TankKind {
     }
 }
 
+/// How the cylinder is mounted/used during the dive.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum TankUsage {
+    /// Usage not recorded.
     #[default]
     None,
+    /// Tank is rigged sidemount.
     Sidemount,
 }
 
@@ -376,11 +453,17 @@ impl From<ffi::dc_usage_t> for GasUsage {
     }
 }
 
+/// Gas mix composition. Fractions are mole fractions in the range `[0.0, 1.0]`
+/// and should sum to 1.0 for a valid mix.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Gasmix {
+    /// Helium fraction.
     pub helium: f64,
+    /// Oxygen fraction.
     pub oxygen: f64,
+    /// Nitrogen fraction.
     pub nitrogen: f64,
+    /// Role this gas plays (oxygen, diluent, OC bottom gas, …).
     pub usage: GasUsage,
 }
 
@@ -406,13 +489,18 @@ impl Default for Gasmix {
     }
 }
 
+/// Role a [`Gasmix`] plays in the dive plan.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum GasUsage {
+    /// Usage not specified.
     #[default]
     None,
+    /// Pure-O2 bail-out / deco gas on a rebreather.
     Oxygen,
+    /// Diluent supply for a closed-circuit rebreather.
     Diluent,
+    /// Open-circuit breathing gas.
     OpenCircuit,
 }
 
@@ -448,36 +536,66 @@ impl From<String> for GasUsage {
     }
 }
 
+/// An event raised during a dive (deco violation, gas switch, ascent warning,
+/// …). The meaning of `flags` and `value` depends on [`kind`](Self::kind); see
+/// [`EventKind`] for the mapping.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DiveEvent {
+    /// Offset from dive start.
     pub time: Duration,
+    /// Event classification — dictates the meaning of `flags` / `value`.
     pub kind: EventKind,
+    /// Event-specific flags (bitfield interpretation depends on `kind`).
     pub flags: u32,
+    /// Event-specific value (interpretation depends on `kind`).
     pub value: u32,
+    /// Human-readable label, if the C library provided one (e.g. a string
+    /// event payload).
     pub name: Option<String>,
 }
 
+/// A single sample in the dive's time series.
+///
+/// Most fields are `Option` / `Vec` because dive computers differ widely in
+/// what they record per sample. [`DiveSample::carry_forward`] propagates the
+/// fields that are sampled sparsely (deco, CNS, …) from the previous sample.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct DiveSample {
+    /// Offset from dive start.
     pub time: Duration,
+    /// Depth in metres.
     pub depth: f64,
+    /// Active gas mix at this sample, if switched.
     pub gasmix: Option<Gasmix>,
+    /// Water temperature in °C.
     pub temperature: Option<f64>,
+    /// Events raised at this sample.
     pub events: Vec<DiveEvent>,
+    /// Remaining bottom time computed by the computer.
     pub rbt: Option<Duration>,
+    /// Heart rate in bpm, if the device records one.
     pub heartbeat: Option<u16>,
+    /// Compass bearing in degrees, if the device records one.
     pub bearing: Option<i16>,
+    /// Current CCR setpoint in bar, if applicable.
     pub setpoint: Option<f64>,
+    /// Per-sensor partial-pressure-of-oxygen readings (for CCR).
     pub ppo2: Vec<Ppo2>,
+    /// Raw O2 cell readings (ppO2 plus millivolt reading).
     pub o2_sensor: Vec<O2Sensor>,
+    /// Tank pressures in bar, indexed in the same order as [`Dive::tanks`].
     pub pressure: Vec<f64>,
+    /// Central nervous system toxicity fraction (0.0–1.0+).
     pub cns: f64,
+    /// Current deco state (NDL remaining, deco stop, safety stop).
     pub deco: Option<Deco>,
+    /// Time-to-surface estimate from the deco model.
     pub tts: Option<Duration>,
 }
 
 impl DiveSample {
     /// Create a new sample carrying forward persistent fields from the previous sample.
+    #[must_use]
     pub fn carry_forward(prev: &DiveSample) -> Self {
         Self {
             setpoint: prev.setpoint,
@@ -491,23 +609,36 @@ impl DiveSample {
     }
 }
 
+/// Partial pressure of O2 reading from a single CCR O2 sensor.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Ppo2 {
+    /// Sensor identifier (for multi-cell rebreathers).
     pub sensor: Sensor,
+    /// Partial pressure of O2, in bar.
     pub bar: f64,
 }
 
+/// Raw O2 cell reading — the ppO2 the cell reports plus the underlying
+/// millivolt reading, useful for diagnosing failing cells.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct O2Sensor {
+    /// Sensor identifier.
     pub sensor: Sensor,
+    /// Partial pressure of O2 reported by the cell, in bar.
     pub ppo2: f64,
+    /// Raw cell voltage in millivolts.
     pub millivolt: f64,
 }
 
+/// Deco state at a sample — either "no-decompression limit" with remaining
+/// NDL, or a required stop.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct Deco {
+    /// Deco-state classification.
     pub kind: DecoKind,
+    /// Remaining NDL (for `NDL`) or required stop duration.
     pub time: Duration,
+    /// Total time-to-surface estimate.
     pub tts: Duration,
 }
 
@@ -543,15 +674,21 @@ impl fmt::Display for DecoKind {
     }
 }
 
+/// Sensor identifier for readings that come from a specific physical sensor
+/// (e.g. a particular O2 cell on a rebreather).
 #[derive(Debug, Default, Clone, Copy, Deserialize, Serialize)]
 #[non_exhaustive]
 pub enum Sensor {
+    /// No sensor identifier attached.
     #[default]
     None,
+    /// Sensor numbered by the device (1-based on most CCRs).
     Id(u32),
 }
 
 impl Sensor {
+    /// Numeric sensor id, or `0` when `Sensor::None`.
+    #[must_use]
     pub fn id(&self) -> u32 {
         match self {
             Self::None => 0,
@@ -579,19 +716,28 @@ impl From<u32> for Sensor {
     }
 }
 
+/// Classification of the current deco state in a [`Deco`] record.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[non_exhaustive]
 pub enum DecoKind {
+    /// No deco information.
     #[default]
     None,
+    /// Within the no-decompression limit — [`Deco::time`] is NDL remaining.
     NDL,
+    /// Required decompression stop at the given depth.
     DecoStop {
+        /// Stop depth in metres.
         depth: f64,
     },
+    /// Optional deep stop at the given depth.
     DeepStop {
+        /// Stop depth in metres.
         depth: f64,
     },
+    /// Recommended safety stop at the given depth.
     SafetyStop {
+        /// Stop depth in metres.
         depth: f64,
     },
 }

@@ -1,3 +1,7 @@
+// Thin wrappers over `reefnet_*_device_*` C calls; function names are
+// self-explanatory and per-item docs would only restate them.
+#![allow(missing_docs)]
+
 use std::ffi::c_uint;
 
 use libdivecomputer_sys as ffi;

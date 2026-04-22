@@ -9,55 +9,74 @@ use crate::error::{LibError, Result};
 use crate::status::Status;
 use crate::transport::Transport;
 
-/// Direction for purge operations.
+/// Direction for purge operations — selects which side of the stream to flush.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Direction {
+    /// Purge pending input (read buffer).
     Input = ffi::DC_DIRECTION_INPUT,
+    /// Purge pending output (write buffer).
     Output = ffi::DC_DIRECTION_OUTPUT,
+    /// Purge both input and output.
     All = ffi::DC_DIRECTION_ALL,
 }
 
-/// Serial parity.
+/// Serial parity setting. See the UART parity bit documentation.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Parity {
+    /// No parity bit.
     None = ffi::DC_PARITY_NONE,
+    /// Odd parity — the parity bit makes the total number of 1-bits odd.
     Odd = ffi::DC_PARITY_ODD,
+    /// Even parity — the parity bit makes the total number of 1-bits even.
     Even = ffi::DC_PARITY_EVEN,
+    /// Mark parity — the parity bit is always 1.
     Mark = ffi::DC_PARITY_MARK,
+    /// Space parity — the parity bit is always 0.
     Space = ffi::DC_PARITY_SPACE,
 }
 
-/// Serial stop bits.
+/// Serial stop-bit configuration.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StopBits {
+    /// 1 stop bit.
     One = ffi::DC_STOPBITS_ONE,
+    /// 1.5 stop bits.
     OneAndHalf = ffi::DC_STOPBITS_ONEPOINTFIVE,
+    /// 2 stop bits.
     Two = ffi::DC_STOPBITS_TWO,
 }
 
-/// Serial flow control.
+/// Serial flow-control setting.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FlowControl {
+    /// No flow control.
     None = ffi::DC_FLOWCONTROL_NONE,
+    /// Hardware flow control (RTS/CTS).
     Hardware = ffi::DC_FLOWCONTROL_HARDWARE,
+    /// Software flow control (XON/XOFF).
     Software = ffi::DC_FLOWCONTROL_SOFTWARE,
 }
 
-/// Serial port configuration.
+/// Serial port configuration parameters.
 #[derive(Debug, Clone)]
 pub struct SerialConfig {
+    /// Bits per second (e.g. `9600`, `115_200`).
     pub baudrate: u32,
+    /// Number of data bits per character (typically 7 or 8).
     pub databits: u32,
+    /// Parity setting.
     pub parity: Parity,
+    /// Stop-bit count.
     pub stopbits: StopBits,
+    /// Flow-control mode.
     pub flowcontrol: FlowControl,
 }
 

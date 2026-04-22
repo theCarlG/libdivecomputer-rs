@@ -19,47 +19,79 @@ use crate::{
     transport::Transport,
 };
 
-/// Information about a discovered device.
+/// Description of a device returned by [`scan`](crate::scan) or constructed
+/// manually before calling [`IoStream::open`]. Bundles a human-readable name,
+/// the transport kind, and the transport-specific connection details.
 #[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceInfo {
+    /// Display name for the device (e.g. the advertised BLE local name,
+    /// serial-port friendly name, or vendor/product label).
     pub name: String,
+    /// Transport the device is reachable over.
     pub transport: Transport,
+    /// Transport-specific connection parameters.
     pub connection: ConnectionInfo,
 }
 
-/// Connection details for a device.
+/// Transport-specific parameters needed to open a connection. Variants match
+/// the transports enumerated by [`Transport`].
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ConnectionInfo {
+    /// Serial port (real or USB CDC-ACM).
     Serial {
+        /// Human-readable port label.
         name: String,
+        /// Device-node path (`/dev/ttyUSB0`, `COM3`, …).
         path: String,
     },
+    /// Raw USB — identified by vendor/product IDs.
     Usb {
+        /// USB vendor ID.
         vendor_id: u16,
+        /// USB product ID.
         product_id: u16,
     },
+    /// USB HID — identified by vendor/product IDs.
     UsbHid {
+        /// USB vendor ID.
         vendor_id: u16,
+        /// USB product ID.
         product_id: u16,
     },
+    /// Classic Bluetooth (RFCOMM / SPP).
     Bluetooth {
+        /// BT MAC as a raw `u64`.
         address: u64,
+        /// Device's advertised name.
         name: String,
+        /// MAC formatted as `AA:BB:CC:DD:EE:FF` — handy for logging and JNI.
         address_string: String,
     },
+    /// Bluetooth Low Energy (GATT).
     Ble {
+        /// BLE MAC as a raw `u64`.
         address: u64,
+        /// Advertised local name, if the peripheral provided one.
         local_name: Option<String>,
+        /// Matched service name from the known-services catalog.
         service_name: String,
+        /// MAC formatted as `AA:BB:CC:DD:EE:FF`.
         address_string: String,
     },
+    /// IrDA (infrared) — mostly legacy Uwatec / early Suunto.
     Irda {
+        /// IrDA device address.
         address: u32,
+        /// Device name as advertised over IrLMP.
         name: String,
     },
+    /// USB mass-storage — device exposes dive logs as files on a mounted
+    /// volume.
     UsbStorage {
+        /// Display label for the volume.
         name: String,
+        /// Filesystem path to the mounted volume.
         path: String,
     },
 }
@@ -125,24 +157,41 @@ impl From<&ConnectionInfo> for Transport {
     }
 }
 
-/// A device event received during download.
+/// A device event received during download. The C library emits these through
+/// a registered callback; [`Device::download_dives`] forwards them here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum DeviceEvent {
     /// Device is waiting for user action (e.g. press a button).
     Waiting,
     /// Download progress update.
-    Progress { current: u32, maximum: u32 },
-    /// Device info received.
+    Progress {
+        /// Bytes / items downloaded so far.
+        current: u32,
+        /// Total bytes / items expected for this download.
+        maximum: u32,
+    },
+    /// Device identification received from the computer.
     DevInfo {
+        /// Model code (vendor-specific).
         model: u32,
+        /// Firmware version word (vendor-specific encoding).
         firmware: u32,
+        /// Device serial number.
         serial: u32,
     },
-    /// Clock sync info.
-    Clock { devtime: u32, systime: i64 },
-    /// Vendor-specific data.
-    Vendor { data: Vec<u8> },
+    /// Clock comparison between the device and the host.
+    Clock {
+        /// Device clock value in seconds since its epoch.
+        devtime: u32,
+        /// Host system time in seconds since the Unix epoch.
+        systime: i64,
+    },
+    /// Vendor-specific raw payload — opaque to this crate.
+    Vendor {
+        /// Raw bytes emitted by the vendor driver.
+        data: Vec<u8>,
+    },
 }
 
 /// Callback data passed to the FFI during foreach.

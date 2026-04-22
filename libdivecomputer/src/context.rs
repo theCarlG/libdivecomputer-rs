@@ -146,12 +146,17 @@ impl std::fmt::Debug for ContextBuilder {
 }
 
 impl ContextBuilder {
+    /// Set the log verbosity. Defaults to whatever the C library's default is
+    /// (typically no logging) if this is not called.
     #[must_use]
     pub fn log_level(mut self, level: LogLevel) -> Self {
         self.log_level = Some(level);
         self
     }
 
+    /// Install a log callback. The closure receives a [`LogLevel`] and a
+    /// message string for every C-library log event at or below the configured
+    /// [`log_level`](Self::log_level).
     #[must_use]
     pub fn log_fn<F>(mut self, f: F) -> Self
     where
@@ -161,6 +166,12 @@ impl ContextBuilder {
         self
     }
 
+    /// Consume the builder and construct a [`Context`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the C library fails to allocate the context, set
+    /// the log level, or install the log callback.
     #[must_use = "the constructed Context owns a C allocation"]
     pub fn build(self) -> Result<Context> {
         let mut ctx = Context::new()?;
@@ -177,16 +188,23 @@ impl ContextBuilder {
     }
 }
 
-/// Log level for the libdivecomputer context.
+/// Log level for the libdivecomputer context. Mirrors `DC_LOGLEVEL_*`; the
+/// numeric value is what the C API accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u32)]
 #[non_exhaustive]
 pub enum LogLevel {
+    /// Suppress all log output.
     None = ffi::DC_LOGLEVEL_NONE,
+    /// Errors only — unrecoverable failures.
     Error = ffi::DC_LOGLEVEL_ERROR,
+    /// Errors and warnings (recoverable conditions).
     Warning = ffi::DC_LOGLEVEL_WARNING,
+    /// Informational messages — significant lifecycle events.
     Info = ffi::DC_LOGLEVEL_INFO,
+    /// Debug-level detail — useful while developing.
     Debug = ffi::DC_LOGLEVEL_DEBUG,
+    /// Maximum verbosity — includes protocol dumps (firehose).
     All = ffi::DC_LOGLEVEL_ALL,
 }
 

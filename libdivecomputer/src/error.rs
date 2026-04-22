@@ -54,7 +54,12 @@ pub enum LibError {
 
     /// Incompatible library version.
     #[error("invalid version (expected: {expected}), (found: {found})")]
-    InvalidVersion { expected: String, found: String },
+    InvalidVersion {
+        /// Version string the caller expected.
+        expected: String,
+        /// Version string reported by the linked C library.
+        found: String,
+    },
 
     /// UTF-8 conversion error.
     #[error(transparent)]

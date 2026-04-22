@@ -1,3 +1,8 @@
+// The function names in this module (`version`, `keepalive`) are
+// self-explanatory wrappers over the matching `oceanic_*_device_*` C calls;
+// re-describing them per item adds noise without information.
+#![allow(missing_docs)]
+
 use std::ffi::c_uint;
 
 use libdivecomputer_sys as ffi;

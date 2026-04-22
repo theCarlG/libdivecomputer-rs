@@ -3,12 +3,18 @@ use std::fmt;
 use serde::Serialize;
 use serde_repr::Deserialize_repr;
 
-/// Dive computer device family.
+/// Dive computer device family — one entry per vendor-specific protocol. The
+/// numeric value is `(vendor_index << 16) | model_index` so families within a
+/// vendor stay adjacent. Individual variants aren't documented because their
+/// names (`SuuntoEonSteel`, `ShearwaterPetrel`, …) already identify the
+/// device; consult the upstream `libdivecomputer` descriptor table for the
+/// exact models that route through each.
 #[repr(u32)]
 #[derive(
     Debug, PartialEq, Eq, Clone, Copy, Serialize, Deserialize_repr, Default, Hash, Ord, PartialOrd,
 )]
 #[non_exhaustive]
+#[allow(missing_docs)]
 pub enum Family {
     #[default]
     None = 0,
