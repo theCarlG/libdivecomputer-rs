@@ -9,6 +9,6 @@ pub fn version() -> String {
         if res.is_null() {
             return "unknown".to_string();
         }
-        CStr::from_ptr(res).to_string_lossy().to_string()
+        CStr::from_ptr(res).to_string_lossy().into_owned()
     }
 }

@@ -310,7 +310,10 @@ impl IoStream {
     /// Get the transport type of this iostream.
     pub fn transport(&self) -> Transport {
         let raw = unsafe { ffi::dc_iostream_get_transport(self.ptr) };
-        Transport::try_from(raw).unwrap_or(Transport::Serial)
+        Transport::try_from(raw).unwrap_or_else(|_| {
+            tracing::warn!(raw, "unknown dc_transport_t value; defaulting to Serial");
+            Transport::Serial
+        })
     }
 
     /// Perform a transport-specific ioctl request.
