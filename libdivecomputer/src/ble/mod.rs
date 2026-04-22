@@ -712,54 +712,51 @@ impl BleTransport {
         )))
     }
 
-    fn write_blocking(&self, data: &[u8]) -> Result<usize> {
+    /// Generic request/reply over the event channel: build an event that
+    /// carries a `oneshot::Sender` for the reply, send it to the worker, and
+    /// block on the response. Collapses the three failure axes (channel
+    /// closed on send, channel closed on recv, worker-side error) into a
+    /// single `LibError::DeviceError`.
+    ///
+    /// `BleEvent::Poll` doesn't fit this shape because its reply is `bool`
+    /// rather than `Result<_, String>`, so `poll_blocking` stays custom.
+    fn request<R, F>(&self, make_event: F) -> Result<R>
+    where
+        F: FnOnce(oneshot::Sender<std::result::Result<R, String>>) -> BleEvent,
+    {
         let (tx, rx) = oneshot::channel();
         self.event_tx
-            .blocking_send(BleEvent::Write {
-                data: data.to_vec(),
-                response: tx,
-            })
+            .blocking_send(make_event(tx))
             .map_err(|_| LibError::DeviceError("BLE event channel closed".to_string()))?;
         match rx.blocking_recv() {
-            Ok(Ok(size)) => Ok(size),
+            Ok(Ok(v)) => Ok(v),
             Ok(Err(err)) => Err(LibError::DeviceError(err)),
             Err(_) => Err(LibError::DeviceError("BLE channel closed".to_string())),
         }
+    }
+
+    fn write_blocking(&self, data: &[u8]) -> Result<usize> {
+        self.request(|response| BleEvent::Write {
+            data: data.to_vec(),
+            response,
+        })
     }
 
     fn read_blocking(&self, buffer: &mut [u8]) -> Result<usize> {
-        let (tx, rx) = oneshot::channel();
-        self.event_tx
-            .blocking_send(BleEvent::Read {
-                size: buffer.len(),
-                response: tx,
-            })
-            .map_err(|_| LibError::DeviceError("BLE event channel closed".to_string()))?;
-        match rx.blocking_recv() {
-            Ok(Ok(data)) => {
-                let n = std::cmp::min(data.len(), buffer.len());
-                buffer[..n].copy_from_slice(&data[..n]);
-                Ok(n)
-            }
-            Ok(Err(err)) => Err(LibError::DeviceError(err)),
-            Err(_) => Err(LibError::DeviceError("BLE channel closed".to_string())),
-        }
+        let data = self.request(|response| BleEvent::Read {
+            size: buffer.len(),
+            response,
+        })?;
+        let n = std::cmp::min(data.len(), buffer.len());
+        buffer[..n].copy_from_slice(&data[..n]);
+        Ok(n)
     }
 
     fn read_characteristic_blocking(&self, uuid: Uuid, buffer: &mut [u8]) -> Result<usize> {
-        let (tx, rx) = oneshot::channel();
-        self.event_tx
-            .blocking_send(BleEvent::ReadCharacteristic { uuid, response: tx })
-            .map_err(|_| LibError::DeviceError("BLE event channel closed".to_string()))?;
-        match rx.blocking_recv() {
-            Ok(Ok(data)) => {
-                let n = std::cmp::min(data.len(), buffer.len());
-                buffer[..n].copy_from_slice(&data[..n]);
-                Ok(n)
-            }
-            Ok(Err(err)) => Err(LibError::DeviceError(err)),
-            Err(_) => Err(LibError::DeviceError("BLE channel closed".to_string())),
-        }
+        let data = self.request(|response| BleEvent::ReadCharacteristic { uuid, response })?;
+        let n = std::cmp::min(data.len(), buffer.len());
+        buffer[..n].copy_from_slice(&data[..n]);
+        Ok(n)
     }
 
     fn poll_blocking(&self, timeout: Duration) -> Result<bool> {
