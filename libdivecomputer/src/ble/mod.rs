@@ -212,10 +212,17 @@ struct BleTransport {
     // Declared before `worker` so the sender's Drop runs first when this
     // struct is dropped: closing the channel is the backstop that lets the
     // worker exit even if the `Disconnect` signal in `impl Drop` was lost.
-    event_tx: mpsc::UnboundedSender<BleEvent>,
+    event_tx: mpsc::Sender<BleEvent>,
     device_name: String,
     worker: Option<std::thread::JoinHandle<()>>,
 }
+
+/// Capacity of the FFI-to-worker event channel. Each sync FFI call is
+/// strictly request-reply (send one event, block on oneshot), so from the
+/// caller's side at most one event is in flight. 8 is headroom for
+/// `set_timeout` or stray `Disconnect` events that could pile up during
+/// shutdown.
+const BLE_EVENT_CHANNEL_CAPACITY: usize = 8;
 
 /// Render a `catch_unwind` panic payload as a human-readable string. Panics
 /// that cross the FFI boundary come back as `Box<dyn Any + Send>` whose payload
@@ -335,7 +342,7 @@ impl BleTransport {
         // whose internal channel buffers nothing for a zero-subscriber
         // broadcast — which is exactly the kind of single-packet loss that can
         // wedge a Shearwater first-sync handshake.
-        let (event_tx, event_rx) = mpsc::unbounded_channel::<BleEvent>();
+        let (event_tx, event_rx) = mpsc::channel::<BleEvent>(BLE_EVENT_CHANNEL_CAPACITY);
         let notification_stream = peripheral.notifications().await?;
 
         log::debug!("ble: attempt {attempt}: subscribing to notifications");
@@ -436,7 +443,7 @@ impl BleTransport {
     async fn event_loop(
         service: Service,
         peripheral: Peripheral,
-        mut event_rx: mpsc::UnboundedReceiver<BleEvent>,
+        mut event_rx: mpsc::Receiver<BleEvent>,
         mut notification_stream: impl StreamExt<Item = ValueNotification> + Unpin,
         write_char: Characteristic,
     ) {
@@ -708,7 +715,7 @@ impl BleTransport {
     fn write_blocking(&self, data: &[u8]) -> Result<usize> {
         let (tx, rx) = oneshot::channel();
         self.event_tx
-            .send(BleEvent::Write {
+            .blocking_send(BleEvent::Write {
                 data: data.to_vec(),
                 response: tx,
             })
@@ -723,7 +730,7 @@ impl BleTransport {
     fn read_blocking(&self, buffer: &mut [u8]) -> Result<usize> {
         let (tx, rx) = oneshot::channel();
         self.event_tx
-            .send(BleEvent::Read {
+            .blocking_send(BleEvent::Read {
                 size: buffer.len(),
                 response: tx,
             })
@@ -742,7 +749,7 @@ impl BleTransport {
     fn read_characteristic_blocking(&self, uuid: Uuid, buffer: &mut [u8]) -> Result<usize> {
         let (tx, rx) = oneshot::channel();
         self.event_tx
-            .send(BleEvent::ReadCharacteristic { uuid, response: tx })
+            .blocking_send(BleEvent::ReadCharacteristic { uuid, response: tx })
             .map_err(|_| LibError::DeviceError("BLE event channel closed".to_string()))?;
         match rx.blocking_recv() {
             Ok(Ok(data)) => {
@@ -758,7 +765,7 @@ impl BleTransport {
     fn poll_blocking(&self, timeout: Duration) -> Result<bool> {
         let (tx, rx) = oneshot::channel();
         self.event_tx
-            .send(BleEvent::Poll {
+            .blocking_send(BleEvent::Poll {
                 timeout,
                 response: tx,
             })
@@ -768,7 +775,7 @@ impl BleTransport {
     }
 
     fn set_timeout(&self, timeout: Duration) {
-        let _ = self.event_tx.send(BleEvent::SetTimeout { timeout });
+        let _ = self.event_tx.blocking_send(BleEvent::SetTimeout { timeout });
     }
 
     fn get_name(&self) -> &str {
@@ -779,10 +786,11 @@ impl BleTransport {
 impl Drop for BleTransport {
     fn drop(&mut self) {
         // Graceful shutdown: the worker handles `Disconnect` by returning from
-        // the event loop. If the send fails, the worker has already exited
-        // (panic or channel-close observed elsewhere) and `join()` returns
-        // immediately.
-        let _ = self.event_tx.send(BleEvent::Disconnect);
+        // the event loop. `try_send` because we must not block Drop on a full
+        // bounded channel — if the send fails (full or receiver gone), the
+        // worker exits via the channel-close branch we added in `event_loop`
+        // once `event_tx` drops at the end of Drop.
+        let _ = self.event_tx.try_send(BleEvent::Disconnect);
         if let Some(worker) = self.worker.take()
             && let Err(payload) = worker.join()
         {
