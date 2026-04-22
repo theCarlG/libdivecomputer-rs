@@ -7,8 +7,17 @@ use std::process::Command;
 use bindgen::callbacks::{ItemInfo, ParseCallbacks};
 
 fn main() -> std::io::Result<()> {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("output directory not specified"));
+    let out_dir = PathBuf::from(
+        env::var("OUT_DIR").expect("Cargo should set OUT_DIR when invoking build scripts"),
+    );
     let (target, target_os, target_arch) = get_target_info();
+
+    // Bindgen emits rerun-if-changed for every header it transitively reads,
+    // but not for our own build inputs — add those explicitly so a version
+    // bump in the submodule's configure.ac forces a rebuild.
+    println!("cargo:rerun-if-changed=wrapper.h");
+    println!("cargo:rerun-if-changed=libdivecomputer/configure.ac");
+    println!("cargo:rerun-if-changed=build.rs");
 
     println!("Building for target: {target} (OS: {target_os}, Arch: {target_arch})");
 
@@ -75,14 +84,14 @@ where
     eprintln!(
         "Running command (may fail): \"{} {}\" in dir: {}",
         cmd_path.display(),
-        args.iter().map(|a| a.borrow()).collect::<Vec<&str>>().join(" "),
+        args.iter()
+            .map(|a| a.borrow())
+            .collect::<Vec<&str>>()
+            .join(" "),
         dir.as_ref().display(),
     );
 
-    let _ = Command::new(cmd_path)
-        .current_dir(dir)
-        .args(args)
-        .status();
+    let _ = Command::new(cmd_path).current_dir(dir).args(args).status();
 }
 
 fn run_command<C, P, S>(dir: C, cmd: P, args: &[S])
@@ -102,10 +111,13 @@ where
 {
     let cmd_path = cmd.as_ref();
     let cmd_path = if cmd_path.components().count() > 1 && cmd_path.is_relative() {
-        dir.as_ref()
-            .join(cmd_path)
-            .canonicalize()
-            .expect("canonicalization failed")
+        let joined = dir.as_ref().join(cmd_path);
+        joined.canonicalize().unwrap_or_else(|e| {
+            panic!(
+                "failed to canonicalize command path {}: {e}",
+                joined.display()
+            )
+        })
     } else {
         PathBuf::from(cmd_path)
     };
@@ -196,18 +208,23 @@ fn setup_android_build(libdc_path: &Path, lib_root: &Path, target: &str) {
     // Copy built libraries to our lib_root and ensure proper linking setup
     let libs_path = libdc_path.join("libs").join(android_abi);
     if libs_path.exists() {
-        std::fs::create_dir_all(lib_root.join("lib")).expect("Failed to create lib directory");
+        let lib_dir = lib_root.join("lib");
+        std::fs::create_dir_all(&lib_dir)
+            .unwrap_or_else(|e| panic!("failed to create {}: {e}", lib_dir.display()));
 
         // Copy the shared library that ndk-build produces
         let src_lib = libs_path.join("libdivecomputer.so");
-        let dst_lib = lib_root.join("lib").join("libdivecomputer.so");
+        let dst_lib = lib_dir.join("libdivecomputer.so");
 
         if src_lib.exists() {
-            std::fs::copy(&src_lib, &dst_lib).expect("Failed to copy libdivecomputer.so");
-            println!(
-                "cargo:rustc-link-search=native={}",
-                lib_root.join("lib").display()
-            );
+            std::fs::copy(&src_lib, &dst_lib).unwrap_or_else(|e| {
+                panic!(
+                    "failed to copy {} to {}: {e}",
+                    src_lib.display(),
+                    dst_lib.display()
+                )
+            });
+            println!("cargo:rustc-link-search=native={}", lib_dir.display());
             println!("cargo:rustc-link-lib=dylib=divecomputer");
         } else {
             panic!("libdivecomputer.so not found at {}", src_lib.display());
@@ -215,7 +232,7 @@ fn setup_android_build(libdc_path: &Path, lib_root: &Path, target: &str) {
 
         // Also copy libc++_shared.so if it exists
         let src_cpp = libs_path.join("libc++_shared.so");
-        let dst_cpp = lib_root.join("lib").join("libc++_shared.so");
+        let dst_cpp = lib_dir.join("libc++_shared.so");
         if src_cpp.exists() {
             let _ = std::fs::copy(&src_cpp, &dst_cpp);
         }
@@ -224,7 +241,13 @@ fn setup_android_build(libdc_path: &Path, lib_root: &Path, target: &str) {
         let include_src = libdc_path.join("include");
         let include_dst = lib_root.join("include");
         if include_src.exists() {
-            copy_directory(&include_src, &include_dst).expect("Failed to copy headers");
+            copy_directory(&include_src, &include_dst).unwrap_or_else(|e| {
+                panic!(
+                    "failed to copy headers from {} to {}: {e}",
+                    include_src.display(),
+                    include_dst.display()
+                )
+            });
         }
     } else {
         panic!(
@@ -337,10 +360,10 @@ fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
         Command::new("xcrun")
             .args(["--sdk", sdk, "--show-sdk-path"])
             .output()
-            .expect("Failed to run xcrun")
+            .unwrap_or_else(|e| panic!("failed to run `xcrun --sdk {sdk} --show-sdk-path`: {e}"))
             .stdout,
     )
-    .expect("Invalid UTF-8 from xcrun")
+    .unwrap_or_else(|e| panic!("`xcrun --sdk {sdk} --show-sdk-path` returned non-UTF-8: {e}"))
     .trim()
     .to_string();
 
@@ -348,10 +371,10 @@ fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
         Command::new("xcrun")
             .args(["--sdk", sdk, "--find", "clang"])
             .output()
-            .expect("Failed to find clang via xcrun")
+            .unwrap_or_else(|e| panic!("failed to run `xcrun --sdk {sdk} --find clang`: {e}"))
             .stdout,
     )
-    .expect("Invalid UTF-8 from xcrun")
+    .unwrap_or_else(|e| panic!("`xcrun --sdk {sdk} --find clang` returned non-UTF-8: {e}"))
     .trim()
     .to_string();
 
@@ -360,7 +383,8 @@ fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
         "aarch64" => "arm64",
         other => other,
     };
-    let min_ios_version = env::var("IPHONEOS_DEPLOYMENT_TARGET").unwrap_or_else(|_| "16.0".to_string());
+    let min_ios_version =
+        env::var("IPHONEOS_DEPLOYMENT_TARGET").unwrap_or_else(|_| "16.0".to_string());
     let version_flag = if target.contains("sim") {
         format!("-mios-simulator-version-min={min_ios_version}")
     } else {
@@ -384,11 +408,7 @@ fn setup_ios_build(libdc_path: &Path, lib_root: &Path, target: &str) {
             "--without-bluez",
             host_arg.as_str(),
         ],
-        &[
-            ("CC", &cc),
-            ("CFLAGS", &cflags),
-            ("LDFLAGS", &ldflags),
-        ],
+        &[("CC", &cc), ("CFLAGS", &cflags), ("LDFLAGS", &ldflags)],
     );
 }
 
@@ -406,7 +426,7 @@ fn setup_windows_build(libdc_path: &Path, lib_root: &Path) -> std::io::Result<()
 
     // Generate headers before copying so they're included in the copy
     generate_config_h(&src_dir)?;
-    generate_version_h(&include_dir)?;
+    generate_version_h(libdc_path, &include_dir)?;
     generate_revision_h(libdc_path, &src_dir)?;
 
     copy_directory(&include_dir, &inc_dir)?;
@@ -416,14 +436,20 @@ fn setup_windows_build(libdc_path: &Path, lib_root: &Path) -> std::io::Result<()
     for entry in std::fs::read_dir(&src_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("c") {
-            let name = path.file_name().unwrap().to_str().unwrap();
-            // Skip the POSIX serial implementation (we use serial_win32.c on Windows)
-            if name == "serial_posix.c" {
-                continue;
-            }
-            sources.push(path);
+        if path.extension().and_then(|e| e.to_str()) != Some("c") {
+            continue;
         }
+        // Skip entries whose filename isn't representable as UTF-8 — none of
+        // libdivecomputer's sources have non-ASCII names, so anything hitting
+        // this branch is a filesystem surprise we silently ignore.
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // Skip the POSIX serial implementation (we use serial_win32.c on Windows)
+        if name == "serial_posix.c" {
+            continue;
+        }
+        sources.push(path);
     }
 
     let mut build = cc::Build::new();
@@ -451,7 +477,10 @@ fn setup_windows_build(libdc_path: &Path, lib_root: &Path) -> std::io::Result<()
         }
         build.include(&libusb_include);
         // Check for VS2022 static lib layout (official releases)
-        let vs_lib = PathBuf::from(&libusb_dir).join("VS2022").join("MS64").join("static");
+        let vs_lib = PathBuf::from(&libusb_dir)
+            .join("VS2022")
+            .join("MS64")
+            .join("static");
         if vs_lib.exists() {
             println!("cargo:rustc-link-search=native={}", vs_lib.display());
         }
@@ -515,21 +544,70 @@ fn generate_config_h(src_dir: &Path) -> std::io::Result<()> {
     std::fs::write(src_dir.join("config.h"), config)
 }
 
-fn generate_version_h(include_dir: &Path) -> std::io::Result<()> {
-    // Read version numbers from configure.ac (they're m4_define'd at the top)
+fn generate_version_h(libdc_path: &Path, include_dir: &Path) -> std::io::Result<()> {
     let version_h_in =
         std::fs::read_to_string(include_dir.join("libdivecomputer").join("version.h.in"))?;
 
+    // Fallbacks track the values autotools would compute from the submodule's
+    // configure.ac as of the last manual sync. They only apply if parsing the
+    // live configure.ac fails, in which case `cargo:warning=` surfaces the
+    // drift at build time.
+    let (major, minor, micro, suffix) = parse_configure_ac_version(libdc_path).unwrap_or_else(
+        |err| {
+            println!(
+                "cargo:warning=failed to parse configure.ac version ({err}); falling back to hardcoded 0.10.0-Divr"
+            );
+            (
+                "0".to_string(),
+                "10".to_string(),
+                "0".to_string(),
+                Some("Divr".to_string()),
+            )
+        },
+    );
+    let version_full = match &suffix {
+        Some(s) if !s.is_empty() => format!("{major}.{minor}.{micro}-{s}"),
+        _ => format!("{major}.{minor}.{micro}"),
+    };
+
     let version_h = version_h_in
-        .replace("@DC_VERSION@", "0.10.0-Divr")
-        .replace("@DC_VERSION_MAJOR@", "0")
-        .replace("@DC_VERSION_MINOR@", "10")
-        .replace("@DC_VERSION_MICRO@", "0");
+        .replace("@DC_VERSION@", &version_full)
+        .replace("@DC_VERSION_MAJOR@", &major)
+        .replace("@DC_VERSION_MINOR@", &minor)
+        .replace("@DC_VERSION_MICRO@", &micro);
 
     std::fs::write(
         include_dir.join("libdivecomputer").join("version.h"),
         version_h,
     )
+}
+
+/// Extract `dc_version_{major,minor,micro,suffix}` from the top of
+/// `configure.ac`. Returns `(major, minor, micro, suffix)`; `suffix` is
+/// `None` if the file has no `dc_version_suffix` macro.
+fn parse_configure_ac_version(
+    libdc_path: &Path,
+) -> std::io::Result<(String, String, String, Option<String>)> {
+    let configure_ac = std::fs::read_to_string(libdc_path.join("configure.ac"))?;
+    let find = |key: &str| -> Option<String> {
+        let needle = format!("m4_define([{key}],");
+        let start = configure_ac.find(&needle)? + needle.len();
+        let rest = &configure_ac[start..];
+        let open = rest.find('[')? + 1;
+        let close = rest[open..].find(']')?;
+        Some(rest[open..open + close].to_string())
+    };
+
+    let major = find("dc_version_major").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "missing dc_version_major")
+    })?;
+    let minor = find("dc_version_minor").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "missing dc_version_minor")
+    })?;
+    let micro = find("dc_version_micro").ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "missing dc_version_micro")
+    })?;
+    Ok((major, minor, micro, find("dc_version_suffix")))
 }
 
 fn generate_revision_h(libdc_path: &Path, src_dir: &Path) -> std::io::Result<()> {
@@ -598,7 +676,9 @@ fn setup_link_libraries(target_os: &str, lib_root: &Path) {
             } else if !is_cross && pkg_config_exists("libusb-1.0") {
                 println!("cargo:rustc-link-lib=usb-1.0");
             } else if is_cross {
-                eprintln!("Warning: cross-compiling for {target_arch} without LIBUSB_DIR set - USB support may be unavailable at runtime");
+                eprintln!(
+                    "Warning: cross-compiling for {target_arch} without LIBUSB_DIR set - USB support may be unavailable at runtime"
+                );
             }
 
             if let Ok(hidapi_dir) = env::var("HIDAPI_DIR") {
@@ -607,7 +687,9 @@ fn setup_link_libraries(target_os: &str, lib_root: &Path) {
             } else if !is_cross && pkg_config_exists("hidapi") {
                 println!("cargo:rustc-link-lib=hidapi");
             } else if is_cross {
-                eprintln!("Warning: cross-compiling for {target_arch} without HIDAPI_DIR set - USBHID support may be unavailable at runtime");
+                eprintln!(
+                    "Warning: cross-compiling for {target_arch} without HIDAPI_DIR set - USBHID support may be unavailable at runtime"
+                );
             }
         }
         "ios" => {
@@ -764,11 +846,17 @@ fn generate_bindings(
         builder = builder.clang_arg(arg);
     }
 
-    let bindings = builder.generate().expect("Unable to generate bindings");
+    let bindings = builder
+        .generate()
+        .expect("bindgen failed to generate bindings from wrapper.h");
 
-    bindings
-        .write_to_file(out_dir.join("bindings.rs"))
-        .expect("Couldn't write bindings!");
+    let bindings_path = out_dir.join("bindings.rs");
+    bindings.write_to_file(&bindings_path).unwrap_or_else(|e| {
+        panic!(
+            "failed to write generated bindings to {}: {e}",
+            bindings_path.display()
+        )
+    });
 
     Ok(())
 }
