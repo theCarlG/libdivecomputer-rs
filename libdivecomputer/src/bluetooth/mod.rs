@@ -59,6 +59,11 @@ struct BtTransport {
 extern "C" fn bt_close(io: *mut c_void) -> ffi::dc_status_t {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if !io.is_null() {
+            // SAFETY: libdivecomputer invokes this close callback exactly once
+            // per successful open, passing back the same `userdata` pointer we
+            // gave to `dc_custom_open` via `Box::into_raw(Box::new(BtTransport))`.
+            // `Box::from_raw` reclaims that unique allocation and drops it,
+            // running the transport's `Drop` to close the RFCOMM socket.
             #[expect(unsafe_code)]
             let _transport = unsafe { Box::from_raw(io.cast::<BtTransport>()) };
         }
@@ -342,7 +347,11 @@ pub fn bt_iostream_open(ctx: &crate::context::Context, address: &str) -> Result<
     };
 
     if status != ffi::DC_STATUS_SUCCESS {
-        // Reclaim and drop the transport on failure.
+        // SAFETY: `dc_custom_open` does not retain `userdata` on non-success
+        // status, so the Box we handed over is still the unique owner. The
+        // pointer was produced by `Box::into_raw(Box::new(BtTransport { ... }))`
+        // earlier in this function with the same type, so reclaiming via
+        // `Box::from_raw` reconstructs the original allocation.
         #[expect(unsafe_code)]
         unsafe {
             drop(Box::from_raw(io_ptr.cast::<BtTransport>()));

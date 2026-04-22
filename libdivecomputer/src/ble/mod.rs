@@ -744,6 +744,11 @@ impl Drop for BleTransport {
 extern "C" fn ble_close(io: *mut c_void) -> ffi::dc_status_t {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if !io.is_null() {
+            // SAFETY: libdivecomputer invokes this close callback exactly once
+            // per successful open, passing back the same `userdata` pointer we
+            // gave to `dc_custom_open` via `Box::into_raw(Box::new(BleTransport))`.
+            // `Box::from_raw` reclaims that unique allocation and drops it,
+            // which runs `BleTransport::Drop` to signal the worker thread.
             let _transport = unsafe { Box::from_raw(io as *mut BleTransport) };
         }
         ffi::DC_STATUS_SUCCESS
@@ -962,6 +967,11 @@ pub fn ble_iostream_open(
     };
 
     if status != ffi::DC_STATUS_SUCCESS {
+        // SAFETY: `dc_custom_open` does not retain `userdata` on non-success
+        // status, so the Box we handed over is still the unique owner. The
+        // pointer was produced by `Box::into_raw(Box::new(BleTransport { ... }))`
+        // earlier in this function with the same type, so reclaiming via
+        // `Box::from_raw` reconstructs the original allocation.
         unsafe { drop(Box::from_raw(io_ptr as *mut BleTransport)) };
         return Err(LibError::status_with_context(
             status,
