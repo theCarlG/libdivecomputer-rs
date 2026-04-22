@@ -209,8 +209,27 @@ impl PollManager {
 }
 
 struct BleTransport {
+    // Declared before `worker` so the sender's Drop runs first when this
+    // struct is dropped: closing the channel is the backstop that lets the
+    // worker exit even if the `Disconnect` signal in `impl Drop` was lost.
     event_tx: mpsc::UnboundedSender<BleEvent>,
     device_name: String,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Render a `catch_unwind` panic payload as a human-readable string. Panics
+/// that cross the FFI boundary come back as `Box<dyn Any + Send>` whose payload
+/// is almost always a `&'static str` (bare `panic!("msg")`) or `String`
+/// (formatted). Anything else — typically an externally constructed payload —
+/// we surface as a placeholder rather than silently swallowing.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "<non-string panic payload>".to_string()
+    }
 }
 
 /// Maximum number of attempts at the connect/discover/subscribe portion of
@@ -342,42 +361,59 @@ impl BleTransport {
         // on a oneshot whose sender was dropped.
         let (startup_tx, startup_rx) = oneshot::channel::<Result<()>>();
 
-        std::thread::spawn(move || {
-            #[cfg(target_os = "android")]
-            let _jni_guard = match android::attach_current_thread() {
-                Ok(g) => g,
-                Err(e) => {
-                    let _ = startup_tx
-                        .send(Err(LibError::DeviceError(format!("JNI attach failed: {e}"))));
+        // Capture the JoinHandle so Drop can join the worker on shutdown.
+        // The outer `catch_unwind` turns a panic inside the worker into a
+        // logged error + clean exit instead of a silent thread death that
+        // wedges the next FFI call. If the panic happens before startup is
+        // signalled, the unwinding drops `startup_tx`, which closes the
+        // channel and surfaces as the "exited before signalling startup"
+        // error path below.
+        let worker = std::thread::spawn(move || {
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(target_os = "android")]
+                let _jni_guard = match android::attach_current_thread() {
+                    Ok(g) => g,
+                    Err(e) => {
+                        let _ = startup_tx.send(Err(LibError::DeviceError(format!(
+                            "JNI attach failed: {e}"
+                        ))));
+                        return;
+                    }
+                };
+
+                let rt = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        let _ = startup_tx.send(Err(LibError::DeviceError(format!(
+                            "failed to build BLE runtime: {e}"
+                        ))));
+                        return;
+                    }
+                };
+
+                if startup_tx.send(Ok(())).is_err() {
+                    // Parent already gave up waiting — nothing more to do.
                     return;
                 }
-            };
 
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(rt) => rt,
-                Err(e) => {
-                    let _ = startup_tx.send(Err(LibError::DeviceError(format!(
-                        "failed to build BLE runtime: {e}"
-                    ))));
-                    return;
-                }
-            };
+                rt.block_on(Self::event_loop(
+                    service,
+                    peripheral_owned,
+                    event_rx,
+                    notification_stream,
+                    write_char,
+                ));
+            }));
 
-            if startup_tx.send(Ok(())).is_err() {
-                // Parent already gave up waiting — nothing more to do.
-                return;
+            if let Err(payload) = result {
+                log::error!(
+                    "ble: worker thread panicked: {}",
+                    panic_message(payload.as_ref())
+                );
             }
-
-            rt.block_on(Self::event_loop(
-                service,
-                peripheral_owned,
-                event_rx,
-                notification_stream,
-                write_char,
-            ));
         });
 
         match startup_rx.await {
@@ -393,6 +429,7 @@ impl BleTransport {
         Ok(Self {
             event_tx,
             device_name,
+            worker: Some(worker),
         })
     }
 
@@ -425,7 +462,13 @@ impl BleTransport {
                     poll_manager.notify_all();
                 },
 
-                Some(event) = event_rx.recv() => {
+                event = event_rx.recv() => {
+                    // `None` means the parent `BleTransport` was dropped
+                    // without sending `Disconnect` — treat channel close as
+                    // an implicit shutdown. Without this explicit branch the
+                    // `tokio::select!` arm would silently skip on `None` and
+                    // the loop would spin on the 10 ms sleep branch forever.
+                    let Some(event) = event else { break };
                     if !Self::handle_event(
                         event,
                         &service,
@@ -735,7 +778,19 @@ impl BleTransport {
 
 impl Drop for BleTransport {
     fn drop(&mut self) {
+        // Graceful shutdown: the worker handles `Disconnect` by returning from
+        // the event loop. If the send fails, the worker has already exited
+        // (panic or channel-close observed elsewhere) and `join()` returns
+        // immediately.
         let _ = self.event_tx.send(BleEvent::Disconnect);
+        if let Some(worker) = self.worker.take()
+            && let Err(payload) = worker.join()
+        {
+            log::error!(
+                "ble: worker thread panicked during shutdown: {}",
+                panic_message(payload.as_ref())
+            );
+        }
     }
 }
 
