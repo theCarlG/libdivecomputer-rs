@@ -1,15 +1,16 @@
 [package]
-name        = "libdivecomputer-sys"
-description = "Unsafe bindings for libdivecomputer"
-version     = "0.2.0"
-edition     = "2024"
-authors     = ["Carl Gunnarsson <me@carlg.tech>"]
-license     = "(MIT OR Apache-2.0) AND LGPL-2.1"
-repository  = "https://github.com/theCarlG/libdivecomputer-rs"
-build       = "build.rs"
-readme      = "README.md"
-keywords    = ["divecomputer"]
-categories  = ["external-ffi-bindings"]
+name         = "libdivecomputer-sys"
+description  = "Unsafe bindings for libdivecomputer"
+version      = { workspace = true }
+edition      = { workspace = true }
+rust-version = { workspace = true }
+authors      = { workspace = true }
+license      = "(MIT OR Apache-2.0) AND LGPL-2.1"
+repository   = { workspace = true }
+build        = "build.rs"
+readme       = { workspace = true }
+keywords     = { workspace = true }
+categories   = ["external-ffi-bindings"]
 
 [dependencies]
 
