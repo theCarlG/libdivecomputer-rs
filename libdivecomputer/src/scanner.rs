@@ -3,6 +3,7 @@ use std::ptr;
 use std::time::Duration;
 
 use libdivecomputer_sys as ffi;
+use tracing::instrument;
 
 use crate::context::Context;
 use crate::device::{ConnectionInfo, DeviceInfo};
@@ -37,6 +38,7 @@ impl<'a> ScanBuilder<'a> {
 
     /// Execute the scan and return discovered devices.
     #[must_use = "discovered devices should be inspected"]
+    #[instrument(skip(self), fields(transport = ?self.transport, timeout_ms = self.timeout.as_millis() as u64))]
     pub fn execute(self) -> Result<Vec<DeviceInfo>> {
         match self.transport {
             Transport::Serial => scan_serial(self.ctx),

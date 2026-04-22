@@ -15,6 +15,7 @@ use libdivecomputer_sys as ffi;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use tokio_stream::StreamExt;
+use tracing::instrument;
 use uuid::Uuid;
 
 use crate::device::{ConnectionInfo, DeviceInfo};
@@ -43,6 +44,7 @@ pub fn scan_ble(timeout: Duration) -> Result<Vec<DeviceInfo>> {
     rt.block_on(scan_ble_async(timeout))
 }
 
+#[instrument(fields(timeout_ms = timeout.as_millis() as u64))]
 async fn scan_ble_async(timeout: Duration) -> Result<Vec<DeviceInfo>> {
     let known_uuids: Vec<Uuid> = KNOWN_SERVICES.iter().map(|(uuid, _)| *uuid).collect();
 
@@ -261,8 +263,9 @@ const MAX_BUFFERED_PACKETS: usize = 1024;
 /// drop is loud on purpose — in a well-behaved session we never hit this.
 fn buffer_push(buffer: &mut VecDeque<Vec<u8>>, packet: Vec<u8>) {
     if buffer.len() >= MAX_BUFFERED_PACKETS {
-        log::warn!(
-            "ble: received-packet buffer at cap ({MAX_BUFFERED_PACKETS}); dropping oldest packet"
+        tracing::warn!(
+            cap = MAX_BUFFERED_PACKETS,
+            "ble: received-packet buffer at cap; dropping oldest packet"
         );
         buffer.pop_front();
     }
@@ -273,8 +276,9 @@ impl BleTransport {
     /// Find the peripheral once, then retry only the session-open portion.
     /// Rescanning on every retry (the previous behavior) ate ~5s of every
     /// attempt for no benefit.
+    #[instrument(skip_all, fields(mac_address = %mac_address, service_name = %service_name))]
     async fn connect(mac_address: &str, service_name: &str) -> Result<Self> {
-        log::debug!("ble: scanning for peripheral {mac_address}");
+        tracing::debug!("ble: scanning for peripheral");
 
         let manager = Manager::new().await?;
         let adapters = manager.adapters().await?;
@@ -291,22 +295,27 @@ impl BleTransport {
             .local_name
             .unwrap_or_else(|| "Unknown".to_string());
 
-        log::debug!("ble: found peripheral {device_name:?}, opening session");
+        tracing::debug!(device_name = %device_name, "ble: found peripheral, opening session");
 
         let mut last_err = None;
         for attempt in 1..=BLE_CONNECT_MAX_ATTEMPTS {
             if attempt > 1 {
-                log::debug!(
-                    "ble: retry attempt {attempt}/{BLE_CONNECT_MAX_ATTEMPTS} after {:?}",
-                    BLE_CONNECT_RETRY_DELAY
+                tracing::debug!(
+                    attempt,
+                    max_attempts = BLE_CONNECT_MAX_ATTEMPTS,
+                    delay_ms = BLE_CONNECT_RETRY_DELAY.as_millis() as u64,
+                    "ble: retrying session open"
                 );
                 tokio::time::sleep(BLE_CONNECT_RETRY_DELAY).await;
             }
             match Self::open_session(&peripheral, device_name.clone(), attempt).await {
                 Ok(transport) => return Ok(transport),
                 Err(err) => {
-                    log::warn!(
-                        "ble: session open attempt {attempt}/{BLE_CONNECT_MAX_ATTEMPTS} failed: {err}"
+                    tracing::warn!(
+                        attempt,
+                        max_attempts = BLE_CONNECT_MAX_ATTEMPTS,
+                        error = %err,
+                        "ble: session open attempt failed"
                     );
                     last_err = Some(err);
                     // Make sure we are fully disconnected before the next
@@ -322,16 +331,17 @@ impl BleTransport {
 
     /// One pass at connect → discover services → subscribe → spawn event loop.
     /// Called from the retry loop in [`Self::connect`].
+    #[instrument(skip(peripheral), fields(device_name = %device_name, attempt = attempt))]
     async fn open_session(
         peripheral: &Peripheral,
         device_name: String,
         attempt: u32,
     ) -> Result<Self> {
         let started = Instant::now();
-        log::debug!("ble: attempt {attempt}: connecting");
+        tracing::debug!("ble: connecting");
         peripheral.connect().await?;
 
-        log::debug!("ble: attempt {attempt}: discovering services");
+        tracing::debug!("ble: discovering services");
         peripheral.discover_services().await?;
 
         let (service, write_char, read_char) =
@@ -346,7 +356,7 @@ impl BleTransport {
         let (event_tx, event_rx) = mpsc::channel::<BleEvent>(BLE_EVENT_CHANNEL_CAPACITY);
         let notification_stream = peripheral.notifications().await?;
 
-        log::debug!("ble: attempt {attempt}: subscribing to notifications");
+        tracing::debug!("ble: subscribing to notifications");
         peripheral.subscribe(&read_char).await?;
 
         // Let the CCCD descriptor write fully complete before the first
@@ -354,9 +364,9 @@ impl BleTransport {
         // for a given physical connection.
         tokio::time::sleep(Duration::from_millis(200)).await;
 
-        log::debug!(
-            "ble: attempt {attempt}: session ready in {:?}",
-            started.elapsed()
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "ble: session ready"
         );
 
         // Clone what the spawned thread needs.
@@ -417,9 +427,9 @@ impl BleTransport {
             }));
 
             if let Err(payload) = result {
-                log::error!(
-                    "ble: worker thread panicked: {}",
-                    panic_message(payload.as_ref())
+                tracing::error!(
+                    panic = %panic_message(payload.as_ref()),
+                    "ble: worker thread panicked"
                 );
             }
         });
@@ -441,6 +451,7 @@ impl BleTransport {
         })
     }
 
+    #[instrument(skip_all, fields(peripheral_id = %peripheral.id()))]
     async fn event_loop(
         service: Service,
         peripheral: Peripheral,
@@ -568,6 +579,7 @@ impl BleTransport {
         true
     }
 
+    #[instrument(skip(adapter), fields(mac_address = %mac_address, service_name = %service_name))]
     async fn find_peripheral(
         adapter: &Adapter,
         mac_address: &str,
@@ -583,9 +595,7 @@ impl BleTransport {
         if let Ok(peripherals) = adapter.peripherals().await {
             for peripheral in peripherals {
                 if Self::peripheral_matches(&peripheral, &target).await {
-                    log::debug!(
-                        "ble: {mac_address} resolved via cached peripheral lookup (no scan)"
-                    );
+                    tracing::debug!("ble: resolved via cached peripheral lookup (no scan)");
                     return Ok(peripheral);
                 }
             }
@@ -610,8 +620,8 @@ impl BleTransport {
         if let Ok(addr) = mac_address.parse::<btleplug::api::BDAddr>() {
             let id: btleplug::platform::PeripheralId = addr.into();
             let result = if use_random_address(service_name) {
-                log::debug!(
-                    "ble: {mac_address} ({service_name}) using ADDRESS_TYPE_RANDOM per Subsurface's use_random_address()"
+                tracing::debug!(
+                    "ble: using ADDRESS_TYPE_RANDOM per Subsurface's use_random_address()"
                 );
                 adapter
                     .add_peripheral_with_address_type(&id, btleplug::api::AddressType::Random)
@@ -621,14 +631,15 @@ impl BleTransport {
             };
             match result {
                 Ok(peripheral) => {
-                    log::debug!(
-                        "ble: {mac_address} resolved via add_peripheral (no scan, no advertising required)"
+                    tracing::debug!(
+                        "ble: resolved via add_peripheral (no scan, no advertising required)"
                     );
                     return Ok(peripheral);
                 }
                 Err(err) => {
-                    log::debug!(
-                        "ble: add_peripheral({mac_address}) failed: {err}; falling back to scan"
+                    tracing::debug!(
+                        error = %err,
+                        "ble: add_peripheral failed; falling back to scan"
                     );
                 }
             }
@@ -637,7 +648,7 @@ impl BleTransport {
         // Tier 3: existing 5-second active scan. Required for cold-start
         // discovery on backends that don't support direct add_peripheral
         // (BlueZ, CoreBluetooth) and as a safety net on Android.
-        log::debug!("ble: cached lookup failed for {mac_address}, falling back to 5s active scan");
+        tracing::debug!("ble: cached lookup failed, falling back to 5s active scan");
         let known_uuids: Vec<Uuid> = KNOWN_SERVICES.iter().map(|(uuid, _)| *uuid).collect();
         let scan_filter = ScanFilter {
             services: known_uuids,
@@ -674,6 +685,7 @@ impl BleTransport {
         false
     }
 
+    #[instrument(skip_all)]
     async fn find_preferred_service_and_characteristics(
         peripheral: &Peripheral,
     ) -> Result<(Service, Characteristic, Characteristic)> {
@@ -792,9 +804,9 @@ impl Drop for BleTransport {
         if let Some(worker) = self.worker.take()
             && let Err(payload) = worker.join()
         {
-            log::error!(
-                "ble: worker thread panicked during shutdown: {}",
-                panic_message(payload.as_ref())
+            tracing::error!(
+                panic = %panic_message(payload.as_ref()),
+                "ble: worker thread panicked during shutdown"
             );
         }
     }
@@ -978,6 +990,7 @@ extern "C" fn ble_ioctl(
 /// `service_name` is the stored service name from [`services::KNOWN_SERVICES`]
 /// and is used to pick the LE address type on Android — see
 /// [`services::use_random_address`].
+#[instrument(skip(ctx), fields(mac_address = %mac_address, service_name = %service_name))]
 pub fn ble_iostream_open(
     ctx: &crate::context::Context,
     mac_address: &str,

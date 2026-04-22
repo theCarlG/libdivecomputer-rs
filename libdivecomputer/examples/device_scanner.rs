@@ -16,6 +16,13 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
     let ctx = Context::builder().log_level(LogLevel::Warning).build()?;
 
     // Determine which transports to scan.

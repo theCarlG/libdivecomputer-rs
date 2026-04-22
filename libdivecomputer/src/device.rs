@@ -6,6 +6,7 @@ use std::{
 
 use libdivecomputer_sys as ffi;
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 use crate::{
     buffer::Buffer,
@@ -215,6 +216,7 @@ unsafe impl Send for Device {}
 impl Device {
     /// Open a device connection.
     #[must_use = "the opened Device owns the iostream and must be used or explicitly dropped"]
+    #[instrument(skip_all)]
     pub fn open(ctx: &Context, desc: &Descriptor, iostream: IoStream) -> Result<Self> {
         let mut ptr = ptr::null_mut();
         let status = unsafe { ffi::dc_device_open(&mut ptr, ctx.ptr(), desc.ptr, iostream.ptr) };
@@ -245,6 +247,7 @@ impl Device {
     /// The callback receives `(data, fingerprint)` and returns `true` to continue.
     /// Optionally provide an event callback and/or a cancel callback.
     #[must_use = "the Result reports download errors that should not be silently discarded"]
+    #[instrument(skip_all)]
     pub fn foreach(
         &self,
         dive_cb: &mut dyn FnMut(&[u8], &Fingerprint) -> bool,

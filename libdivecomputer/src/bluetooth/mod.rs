@@ -35,6 +35,7 @@ use crate::iostream::IoStream;
 /// Returns only bonded devices — Android does not support active classic BT
 /// discovery from native code (same limitation as Subsurface).
 #[cfg(target_os = "android")]
+#[tracing::instrument]
 pub fn scan_bluetooth_android() -> Result<Vec<DeviceInfo>> {
     let _guard = crate::android::attach_current_thread()
         .map_err(|e| LibError::DeviceError(format!("JNI attach failed: {e}")))?;
@@ -305,6 +306,7 @@ extern "C" fn bt_purge(io: *mut c_void, _direction: ffi::dc_direction_t) -> ffi:
 /// Creates a `BtTransport` wrapping an Android `BluetoothSocket` and registers
 /// it with libdivecomputer via `dc_custom_open(DC_TRANSPORT_BLUETOOTH, ...)`.
 #[cfg(target_os = "android")]
+#[tracing::instrument(skip(ctx), fields(address = %address))]
 pub fn bt_iostream_open(ctx: &crate::context::Context, address: &str) -> Result<IoStream> {
     let _guard = crate::android::attach_current_thread()
         .map_err(|e| LibError::DeviceError(format!("JNI attach failed: {e}")))?;
