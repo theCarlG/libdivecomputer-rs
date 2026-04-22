@@ -113,9 +113,12 @@ fn main() -> Result<()> {
     };
 
     let output_string = match args.format {
-        OutputFormat::Json => serde_json::to_string(&output).unwrap(),
-        OutputFormat::PrettyJson => serde_json::to_string_pretty(&output).unwrap(),
-        OutputFormat::Xml => serde_xml_rs::to_string(&output).unwrap(),
+        OutputFormat::Json => serde_json::to_string(&output)
+            .map_err(|e| libdivecomputer::LibError::DeviceError(format!("JSON encode: {e}")))?,
+        OutputFormat::PrettyJson => serde_json::to_string_pretty(&output)
+            .map_err(|e| libdivecomputer::LibError::DeviceError(format!("JSON encode: {e}")))?,
+        OutputFormat::Xml => serde_xml_rs::to_string(&output)
+            .map_err(|e| libdivecomputer::LibError::DeviceError(format!("XML encode: {e}")))?,
     };
 
     if let Some(output_path) = &args.output {
