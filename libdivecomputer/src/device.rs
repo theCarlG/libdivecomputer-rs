@@ -40,8 +40,6 @@ pub struct DeviceInfo {
 pub enum ConnectionInfo {
     /// Serial port (real or USB CDC-ACM).
     Serial {
-        /// Human-readable port label.
-        name: String,
         /// Device-node path (`/dev/ttyUSB0`, `COM3`, …).
         path: String,
     },
@@ -63,8 +61,6 @@ pub enum ConnectionInfo {
     Bluetooth {
         /// BT MAC as a raw `u64`.
         address: u64,
-        /// Device's advertised name.
-        name: String,
         /// MAC formatted as `AA:BB:CC:DD:EE:FF` — handy for logging and JNI.
         address_string: String,
     },
@@ -83,14 +79,10 @@ pub enum ConnectionInfo {
     Irda {
         /// IrDA device address.
         address: u32,
-        /// Device name as advertised over IrLMP.
-        name: String,
     },
     /// USB mass-storage — device exposes dive logs as files on a mounted
     /// volume.
     UsbStorage {
-        /// Display label for the volume.
-        name: String,
         /// Filesystem path to the mounted volume.
         path: String,
     },
@@ -110,10 +102,19 @@ impl ConnectionInfo {
         }
     }
 
-    /// Get a human-readable display name.
+    /// Best-effort human-readable name derived from the connection's
+    /// structural fields. Prefer [`DeviceInfo::name`] when it is available —
+    /// it carries the device's advertised name, which this method cannot
+    /// recover.
+    #[must_use]
     pub fn display_name(&self) -> Cow<'_, str> {
         match self {
-            Self::Serial { name, .. } => Cow::Borrowed(name),
+            Self::Serial { path } | Self::UsbStorage { path } => Cow::Borrowed(
+                path.rsplit(['/', '\\'])
+                    .next()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(path),
+            ),
             Self::Usb {
                 vendor_id,
                 product_id,
@@ -122,7 +123,7 @@ impl ConnectionInfo {
                 vendor_id,
                 product_id,
             } => Cow::Owned(format!("USB Device {vendor_id:04X}:{product_id:04X}")),
-            Self::Bluetooth { name, .. } => Cow::Borrowed(name),
+            Self::Bluetooth { address_string, .. } => Cow::Borrowed(address_string),
             Self::Ble {
                 local_name,
                 service_name,
@@ -131,8 +132,7 @@ impl ConnectionInfo {
                 .as_ref()
                 .map(|name| Cow::Owned(format!("{name} - {service_name}")))
                 .unwrap_or(Cow::Borrowed(service_name)),
-            Self::Irda { name, .. } => Cow::Borrowed(name),
-            Self::UsbStorage { name, .. } => Cow::Borrowed(name),
+            Self::Irda { address } => Cow::Owned(format!("IrDA 0x{address:08X}")),
         }
     }
 }
@@ -580,7 +580,6 @@ mod tests {
     #[test]
     fn connection_info_connection_string_serial() {
         let ci = ConnectionInfo::Serial {
-            name: "ttyUSB0".into(),
             path: "/dev/ttyUSB0".into(),
         };
         assert_eq!(ci.connection_string().unwrap().as_ref(), "/dev/ttyUSB0");
@@ -612,7 +611,6 @@ mod tests {
     #[test]
     fn connection_info_display_name_serial() {
         let ci = ConnectionInfo::Serial {
-            name: "ttyUSB0".into(),
             path: "/dev/ttyUSB0".into(),
         };
         assert_eq!(ci.display_name().as_ref(), "ttyUSB0");
@@ -652,13 +650,7 @@ mod tests {
     #[test]
     fn transport_from_connection_info() {
         let cases: Vec<(ConnectionInfo, Transport)> = vec![
-            (
-                ConnectionInfo::Serial {
-                    name: "".into(),
-                    path: "".into(),
-                },
-                Transport::Serial,
-            ),
+            (ConnectionInfo::Serial { path: "".into() }, Transport::Serial),
             (
                 ConnectionInfo::Usb {
                     vendor_id: 0,
@@ -676,7 +668,6 @@ mod tests {
             (
                 ConnectionInfo::Bluetooth {
                     address: 0,
-                    name: "".into(),
                     address_string: "".into(),
                 },
                 Transport::Bluetooth,
@@ -690,18 +681,9 @@ mod tests {
                 },
                 Transport::Ble,
             ),
+            (ConnectionInfo::Irda { address: 0 }, Transport::Irda),
             (
-                ConnectionInfo::Irda {
-                    address: 0,
-                    name: "".into(),
-                },
-                Transport::Irda,
-            ),
-            (
-                ConnectionInfo::UsbStorage {
-                    name: "".into(),
-                    path: "".into(),
-                },
+                ConnectionInfo::UsbStorage { path: "".into() },
                 Transport::UsbStorage,
             ),
         ];

@@ -124,9 +124,9 @@ fn scan_serial(ctx: &Context) -> Result<Vec<DeviceInfo>> {
             let path = cstr_or_default(unsafe { ffi::dc_serial_device_get_name(device) }, "Unknown");
             let name = extract_device_name(&path);
             DeviceInfo {
-                name: name.clone(),
+                name,
                 transport: Transport::Serial,
-                connection: ConnectionInfo::Serial { name, path },
+                connection: ConnectionInfo::Serial { path },
             }
         },
         |device| unsafe { ffi::dc_serial_device_free(device) },
@@ -202,12 +202,11 @@ fn scan_bluetooth(ctx: &Context) -> Result<Vec<DeviceInfo>> {
                 );
                 let address_string = format_bluetooth_address(address);
                 DeviceInfo {
-                    name: name.clone(),
+                    name,
                     transport: Transport::Bluetooth,
                     connection: ConnectionInfo::Bluetooth {
                         address,
                         address_string,
-                        name,
                     },
                 }
             },
@@ -228,9 +227,9 @@ fn scan_irda(ctx: &Context) -> Result<Vec<DeviceInfo>> {
                 "Unknown IrDA Device",
             );
             DeviceInfo {
-                name: name.clone(),
+                name,
                 transport: Transport::Irda,
-                connection: ConnectionInfo::Irda { address, name },
+                connection: ConnectionInfo::Irda { address },
             }
         },
         |device| unsafe { ffi::dc_irda_device_free(device) },

@@ -167,12 +167,11 @@ pub fn get_bonded_devices() -> Result<Vec<DeviceInfo>> {
         let address = mac_string_to_u64(&address_string).unwrap_or(0);
 
         devices.push(DeviceInfo {
-            name: name.clone(),
+            name,
             transport: Transport::Bluetooth,
             connection: ConnectionInfo::Bluetooth {
                 address,
                 address_string,
-                name,
             },
         });
     }
